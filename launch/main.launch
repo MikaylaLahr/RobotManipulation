@@ -12,6 +12,7 @@
     <arg name="use_sim" value="$(arg use_sim)" />
     <!-- Unfortunately I can't get it to load custom transforms, so I'm going to publish them manually. That file is not necessary anymore. -->
     <!-- <arg name="transform_filepath" value="$(find robot_manipulation)/config/static_transforms.yaml" /> -->
+    <arg name="filter_params" value="$(find robot_manipulation)/config/filter_params.yaml" />
   </include>
 
   <!-- 
