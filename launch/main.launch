@@ -1,0 +1,11 @@
+<launch>
+  <!-- Launch the pick_place.py node -->
+  <node pkg="robot_manipulation" type="pick_place.py" name="pick_place_node" output="screen">
+  </node>
+  
+  <!-- Launch the xsarm_perception.launch file -->
+  <include file="$(find interbotix_xsarm_perception)/launch/xsarm_perception.launch">
+    <arg name="robot_model" value="wx250s" />
+    <arg name="use_rviz" value="true" />
+  </include>
+</launch>
