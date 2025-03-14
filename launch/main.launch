@@ -20,5 +20,5 @@
     (roslaunch interbotix_xsarm_perception xsarm_perception.launch robot_model:=wx250s use_pointcloud_tuner_gui:=true use_armtag_tuner_gui:=true)
     However if you try to input the XYZ rotation it gives I think the order is wrong. So use tf_echo to get the transform as a proper quaternion.
   -->
-  <node pkg="tf2_ros" type="static_transform_publisher" name="camera_base_link_broadcaster" args="0.012 -0.280 0.672 0.709 0.704 0.034 0.014 camera_color_optical_frame wx250s/base_link" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="camera_base_link_broadcaster" args="0.041 -0.269 0.684 0.691 0.722 -0.029 0.001 camera_color_optical_frame wx250s/base_link" />
 </launch>

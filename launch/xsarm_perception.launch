@@ -66,6 +66,7 @@
     <arg name="depth_fps"                         value="$(arg depth_fps)"/>
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
+    <arg name="align_depth"                value="true" />
   </include>
 
   <include file="$(find interbotix_perception_modules)/launch/pc_filter.launch">

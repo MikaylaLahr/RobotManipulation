@@ -10,6 +10,8 @@ config = rs.config()
 config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
 config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
 
+align = rs.align(rs.stream.color)
+
 # Start the pipeline
 pipeline.start(config)
 
@@ -17,10 +19,12 @@ try:
     while True:
         # Wait for a new frame
         frames = pipeline.wait_for_frames()
+
+        aligned_frames = align.process(frames)
         
         # Get the color and depth frames
-        color_frame = frames.get_color_frame()
-        depth_frame = frames.get_depth_frame()
+        color_frame = aligned_frames.get_color_frame()
+        depth_frame = aligned_frames.get_depth_frame()
 
         # Convert color frame to numpy array (OpenCV format)
         color_image = np.asanyarray(color_frame.get_data())
@@ -28,52 +32,34 @@ try:
 
         # Color Masking
         hsv_img = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV) # Swap to hue, sat, values
+
+        depth_mask = cv2.inRange(depth_image, 600, 700)  # Adjust threshold
         
-        #red masking
-        low_mask = np.array([0, 120, 80])
+        # Red box masking
+        low_mask = np.array([0, 140, 20])
         hi_mask = np.array([10, 255, 255])
         mask1 = cv2.inRange(hsv_img, low_mask, hi_mask)
 
-        low_mask = np.array([170, 120, 80])
+        low_mask = np.array([170, 140, 20])
         hi_mask = np.array([180, 255,255])
         mask2 = cv2.inRange(hsv_img, low_mask, hi_mask)
-        red_mask = mask1+mask2
-
+        red_mask = (mask1 | mask2) & depth_mask
         red_mask_out = color_image.copy()
         red_mask_out[np.where(red_mask==0)] = 0
 
         contours_red, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        #Brown box masking
-        low_mask = np.array([5, 120, 40])
-        hi_mask = np.array([20, 255, 200])
-        brown_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
-        brown_mask_out = color_image.copy()
-        brown_mask_out[np.where(brown_mask==0)] = 0
+        # Black cube masking
+        low_mask = np.array([0, 0, 0])
+        hi_mask = np.array([180, 140, 100])
+        black_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
+        kernel = np.ones((5, 5), np.uint8)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
+        black_mask = black_mask & depth_mask
+        black_mask_out = color_image.copy()
+        black_mask_out[black_mask == 0] = 0
 
-        contours_brown, _ = cv2.findContours(brown_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        for contour in contours_brown:
-            if cv2.contourArea(contour) > 100:
-                x,y,w,h = cv2.boundingRect(contour)
-                center_x = x + w // 2
-                center_y = y + h //2
-                #cv2.rectangle(color_image,(x,y),(x+w,y+h),(0,255,0),2)
-                cv2.polylines(color_image, [contour], isClosed=True, color=(0, 255, 0), thickness=2)
-                cv2.circle(color_image,(center_x,center_y),5,(0,0,255),-1)
-
-        for contour in contours_red:
-            if cv2.contourArea(contour) > 100:
-                x,y,w,h = cv2.boundingRect(contour)
-                center_x = x + w // 2
-                center_y = y + h //2
-                #cv2.rectangle(color_image,(x,y),(x+w,y+h),(0,255,0),2)
-                cv2.polylines(color_image, [contour], isClosed=True, color=(0, 255, 0), thickness=2)
-                cv2.circle(color_image,(center_x,center_y),5,(0,0,255),-1)
-
-
-
-        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.2), cv2.COLORMAP_JET)
+        contours_black, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         # Convert the frame to grayscale
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
@@ -86,22 +72,39 @@ try:
 
         # Optional: Find contours and draw them on the original image
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Draw the contours on a blank image
-        outline_image = np.zeros_like(color_image)
-        cv2.drawContours(outline_image, contours, -1, (0, 255, 0), 2)  # Green contours with thickness 2
 
         # Draw the contours over the original color image
-        overlay_image = color_image.copy()
-        cv2.drawContours(overlay_image, contours, -1, (0, 255, 0), 2)  # Green contours with thickness 2
+        general_contours_overlay = color_image.copy()
+        cv2.drawContours(general_contours_overlay, contours, -1, (0, 255, 0), 2)  # Green contours with thickness 2
+        
+        # Draw the contours on a blank image
+        outline_only_image = np.zeros_like(color_image)
+        cv2.drawContours(outline_only_image, contours, -1, (0, 255, 0), 2)  # Green contours with thickness 2
 
+        masked_contour_overlay = color_image.copy()
+
+        for contour in contours_black:
+            if cv2.contourArea(contour) > 500:
+                x,y,w,h = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                cv2.polylines(masked_contour_overlay, [contour], isClosed=True, color=(0, 255, 255), thickness=2)
+                cv2.circle(masked_contour_overlay,(center_x,center_y),5,(0,255,255),-1)
+
+        for contour in contours_red:
+            if cv2.contourArea(contour) > 500:
+                x,y,w,h = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                cv2.polylines(masked_contour_overlay, [contour], isClosed=True, color=(0, 255, 0), thickness=2)
+                cv2.circle(masked_contour_overlay,(center_x,center_y),5,(0,255,0),-1)
 
         # Loop over each contour to find area and draw contours
         for contour in contours:
             area = cv2.contourArea(contour)
             if area > 500:  # Filter out small contours (you can adjust the threshold)
                 # Draw the contour on the original image
-                cv2.drawContours(overlay_image, [contour], -1, (0, 255, 0), 2)  # Green contours
+                cv2.drawContours(general_contours_overlay, [contour], -1, (0, 255, 0), 2)  # Green contours
 
                 # Calculate the moments of the contour to find the center of the contour for text placement
                 M = cv2.moments(contour)
@@ -110,12 +113,14 @@ try:
                     cy = int(M["m01"] / M["m00"])
 
                     # Display the area of the contour on the image
-                    cv2.putText(overlay_image, f"Area: {int(area)}", (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.putText(general_contours_overlay, f"Area: {int(area)}", (cx, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         # Find contours to detect objects based on depth
         #thresh = cv2.inRange(depth_image, lower_threshold, upper_threshold)
-        ret, thresh = cv2.threshold(depth_image, 700, 255, cv2.THRESH_BINARY_INV)  # Adjust threshold
-        contours_depth, _ = cv2.findContours(thresh.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_depth, _ = cv2.findContours(depth_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Draw contours on depth image
+        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.2), cv2.COLORMAP_JET)
 
         bounding_boxes_areas = []
         # Draw bounding boxes around detected objects
@@ -130,13 +135,13 @@ try:
                 cv2.putText(depth_colormap, f"Area: {int(area)}", (contour_depth[0][0][0], contour_depth[0][0][1] - 10), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
                 
-        # Display the live outline image
-
-        cv2.imshow("Live Object Outlines", outline_image)
-        cv2.imshow("Live Object Outlines over RGB Image", overlay_image)
-        cv2.imshow("Depth Image with Bounding Boxes", depth_colormap)
-        cv2.imshow("Red Color mask out", brown_mask_out)
-        cv2.imshow("Brown Mask with Center",color_image)
+        cv2.imshow("General Object Outlines", outline_only_image)
+        cv2.imshow("General Object Outlines over RGB Image", general_contours_overlay)
+        cv2.imshow("Depth Image with General Object Outlines", depth_colormap)
+        cv2.imshow("Contours found from thresholded images", masked_contour_overlay)
+        cv2.imshow("Red mask", red_mask_out)
+        cv2.imshow("Black cube mask", black_mask_out)
+        cv2.imshow("Depth mask", depth_mask)
 
         # Exit the loop if the user presses 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):

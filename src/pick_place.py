@@ -10,27 +10,30 @@ import cv2
 import numpy as np
 
 import tf2_ros
+from tf2_geometry_msgs import do_transform_point
 import geometry_msgs.msg
-from tf2_msgs.msg import TFMessage
-
-from scipy.spatial.transform import Rotation as R
-
+from sensor_msgs.msg import CameraInfo
+import math
 
 import signal
+
+import pyrealsense2
 
     
 transform = None
 linktransform = None
 opticaltransform = None
 
-#Class to recieve color and depth images from rostopic
+# Class to recieve color and depth images from rostopic
 class ImageListener:
     def __init__(self):
         self.bridge = CvBridge() #used to convert from ros format to cv
         self.color_sub = rospy.Subscriber('/camera/color/image_raw', Image, self.color_callback) #Raw topics may cause lag, may be worth trying compressed topics
-        self.depth_sub = rospy.Subscriber('/camera/depth/image_rect_raw', Image, self.depth_callback)
+        self.depth_sub = rospy.Subscriber('/camera/aligned_depth_to_color/image_raw', Image, self.depth_callback)
+        self.color_info_sub = rospy.Subscriber('/camera/color/camera_info', CameraInfo, self.info_callback)
         self.cv_image = None
         self.dp_image = None
+        self.color_info = None
 
     def color_callback(self, msg):
         try:
@@ -49,166 +52,109 @@ class ImageListener:
         except Exception as e:
             rospy.logerr(f"Depth image conversion error: {e}")
 
+    def info_callback(self, msg):
+        self.color_info = msg
+
 
 def signal_handler(sig, frame): #ensure behavior with ctrl C
     rospy.loginfo("Shutdown initiated with Ctrl+C")
     cv2.destroyAllWindows()
     exit(0)
 
-
-def quat_to_rot_matrix(quat):
-    """Convert a quaternion (x, y, z, w) to a 3x3 rotation matrix."""
-    # Convert quaternion [x, y, z, w] to a rotation matrix
-    r = R.from_quat([quat[0], quat[1], quat[2], quat[3]])  # Pass quaternion as a list
-    return r.as_matrix()  # Return the 3x3 rotation matrix
-
-def frame_transform(x, y, z ,transform) :
-    point_camera_frame = np.array([x * 0.001, y * 0.001, x])
-    translation = np.array([transform.transform.translation.x,
-    transform.transform.translation.y,
-    transform.transform.translation.z])
-
-    point_base_frame = point_camera_frame + translation  # Adding translation
-
-    # 3. Apply rotation (quaternion to rotation matrix)
-    quat = transform.transform.rotation
-    q = np.array([quat.x, quat.y, quat.z, quat.w])
-
-    # Convert quaternion to rotation matrix (using scipy)
-    rotation_matrix = quat_to_rot_matrix(q)
-
-    # Apply the rotation
-    return np.dot(rotation_matrix, point_base_frame)
-
 def main():
-
+    signal.signal(signal.SIGINT, signal_handler)
     listener = ImageListener() #Listen for image topic
 
     #   Initialize the arm module along with the pointcloud and armtag modules
     bot = InterbotixManipulatorXS("wx250s", moving_time=1.5, accel_time=0.75)
-    pcl = InterbotixPointCloudInterface()
 
-    # set initial arm and gripper pose
-    bot.arm.set_ee_pose_components(x=0.3, z=0.2)
-    bot.gripper.open()
+    buffer = tf2_ros.Buffer()
+    tf_listener = tf2_ros.TransformListener(buffer)
 
-    # get the cluster positions
-    # sort them from max to min 'x' position w.r.t. the 'wx250s/base_link' frame
-    success = False
-    while not success:
-        success, clusters = pcl.get_cluster_positions(ref_frame="wx250s/base_link", sort_axis="x", reverse=True)
-        rospy.loginfo((success, clusters))
-
-    print(clusters)
-
-    signal.signal(signal.SIGINT, signal_handler)
-
-    # Start capturing frames from the RealSense camera
-    code_running = True
+    pub = rospy.Publisher('/point', geometry_msgs.msg.PointStamped)
     
-    while code_running:
-
+    while not rospy.is_shutdown():
         if listener.cv_image is None or listener.dp_image is None:
-            rospy.loginfo("Waiting for new frame...")
-            rospy.sleep(0.1)  # Sleep for a while before checking again
+            rospy.loginfo_once("Waiting for frames...")
+            # rospy.loginfo_throttle(1, "Waiting for frames...")
             continue
 
         color_image = listener.cv_image
         depth_image = listener.dp_image
+        camera_info = listener.color_info
+
+        # temporary
         listener.cv_image = None
 
-        # Color Masking (Red Detection)
         hsv_img = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
-
+        
         # Red Masking
-        low_mask = np.array([0, 120, 80])
+        low_mask = np.array([0, 140, 20])
         hi_mask = np.array([10, 255, 255])
         mask1 = cv2.inRange(hsv_img, low_mask, hi_mask)
-
-        low_mask = np.array([170, 120, 80])
-        hi_mask = np.array([180, 255, 255])
+        low_mask = np.array([170, 140, 20])
+        hi_mask = np.array([180, 255,255])
         mask2 = cv2.inRange(hsv_img, low_mask, hi_mask)
-        red_mask = mask1 + mask2
+        red_mask = mask1+mask2
 
-        red_mask_out = color_image.copy()
-        red_mask_out[np.where(red_mask == 0)] = 0
+        # Black cube masking
+        low_mask = np.array([0, 0, 0])
+        hi_mask = np.array([180, 140, 100])
+        black_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
+        kernel = np.ones((5, 5), np.uint8)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
 
-        # Brown Masking for the box
-        low_mask = np.array([5, 120, 40])
-        hi_mask = np.array([20, 255, 200])
-        brown_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
+        contours_red, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_black, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        contours_red, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE) #why red mask and not redmask out
-        contours_brown, _ = cv2.findContours(brown_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_red = list(sorted(contours_red, key=cv2.contourArea, reverse=True))
+        contours_red = contours_red[:1]
 
-        # Detect and draw contours for red objects
-        ###UP TO HERE TESTED
         for contour in contours_red:
-            if cv2.contourArea(contour) > 100:
-                #This method can also work instead of moment centroid, may be less accurate overall
-                '''x, y, w, h = cv2.boundingRect(contour)
-                center_x = x + w // 2
-                center_y = y + h // 2
-                cv2.polylines(color_image, [contour], isClosed=True, color=(0, 255, 0), thickness=2)
-                cv2.circle(color_image, (center_x, center_y), 5, (0, 0, 255), -1)'''
+            if cv2.contourArea(contour) < 500:
+                continue
+            
+            moments = cv2.moments(contour)
+            if abs(moments["m00"]) < 1e-5:
+                continue
 
-                M = cv2.moments(contour)
-                if M["m00"] != 0:  # Avoid division by zero
-                # Compute centroid of the contour
-                    center_x = int(M["m10"] / M["m00"])
-                    center_y = int(M["m01"] / M["m00"])
+            center_x = int(moments["m10"] / moments["m00"])
+            center_y = int(moments["m01"] / moments["m00"])
 
-                    # Visualize centroid
-                    cv2.circle(color_image, (center_x, center_y), 5, (0, 255, 0), -1)  # Green dot at centroid
-                    cv2.imshow("Detected Red Objects", color_image)
-                    cv2.waitKey(1)  # Refresh window and handle key events
+            # Get the 3D position of the object from the depth image (using the center of the contour)
+            depth = depth_image[center_y, center_x]
+            if depth == 0 or math.isnan(depth):
+                continue
 
-                    # Get the 3D position of the object from the depth image (using the center of the contour)
-                    depth = depth_image[center_y, center_x]
-                    if depth != 0:
-                        depth_in_meters = depth * 0.001  # Convert to meters
-                        # Now, we'll estimate the position of the object in 3D space based on the depth
+            # https://medium.com/@yasuhirachiba/converting-2d-image-coordinates-to-3d-coordinates-using-ros-intel-realsense-d435-kinect-88621e8e733a
+            intrinsics = pyrealsense2.intrinsics()
+            intrinsics.width = camera_info.width
+            intrinsics.height = camera_info.height
+            intrinsics.ppx = camera_info.K[2]
+            intrinsics.ppy = camera_info.K[5]
+            intrinsics.fx = camera_info.K[0]
+            intrinsics.fy = camera_info.K[4]
+            intrinsics.model = pyrealsense2.distortion.none 
+            intrinsics.coeffs = [i for i in camera_info.D]
 
-                        #THESE VALUES DO NOT MATCH THOSE OF PICK PLACE ORIGINAL -> NEED TO TRANSFORM TO ARM SPACE
-                        try:
-                            x_position = center_x
-                            y_position = center_y
-                            z_position = depth_in_meters
+            x, y, z = pyrealsense2.rs2_deproject_pixel_to_point(intrinsics, [center_x, center_y], depth * 0.001)
+            point = geometry_msgs.msg.PointStamped()
+            point.header.frame_id = "camera_color_optical_frame"
+            point.header.stamp = rospy.Time.now()
+            point.point.x = x
+            point.point.y = y
+            point.point.z = z
 
-                            print("X: ", x_position, "Y: ", y_position, "Z: ", z_position)
+            try:
+                transform = buffer.lookup_transform('wx250s/base_link', 'camera_color_optical_frame', rospy.Time(0))
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+                continue
+        
+            transformed_point = do_transform_point(point, transform)
 
-
-                            '''point_base = tf_listener.transformPoint('camera_color_frame', point)
-                            print("Transformed Point - X: ", point_base.point.x, " Y: ", point_base.point.y, " Z: ", point_base.point.z)'''
-
-                            # The arm moves to the detected object's position
-                            bot.arm.set_ee_pose_components(x=x_position, y=y_position, z=z_position + 0.05, pitch=0.5)
-                            bot.arm.set_ee_pose_components(x=x_position, y=y_position, z=z_position, pitch=0.5)
-                            bot.gripper.close()
-
-                            # Move the arm to the brown box center to place the object
-                            '''for brown_contour in contours_brown:
-                                if cv2.contourArea(brown_contour) > 100:  # Ensure it's a valid contour
-                                    x_brown, y_brown, w_brown, h_brown = cv2.boundingRect(brown_contour)
-                                    center_brown_x = x_brown + w_brown // 2
-                                    center_brown_y = y_brown + h_brown // 2
-                                    # Now use this center as the target for placing the red object
-                                    bot.arm.set_ee_pose_components(x=center_brown_x, y=center_brown_y, z=0.2, pitch=0.5)
-                                    bot.arm.set_ee_pose_components(x=center_brown_x, y=center_brown_y, z=0.1, pitch=0.5)
-                                    bot.gripper.open()
-                            '''
-                            # Move the arm back to the starting position
-                            bot.arm.set_ee_pose_components(x=0.3, z=0.2)
-                            bot.gripper.open()
-                        except (Exception) as e:
-                            print(e)
-        code_running = False
-
-        # Show the frame with detected red objects
-        '''red_mask_out = color_image.copy()
-        red_mask_out[np.where(red_mask==0)] = 0
-        cv2.imshow("Detected Red Objects", red_mask_out)
-        cv2.waitKey(1)  # Refresh window and handle key events'''
+            bot.arm.set_ee_pose_components(x=transformed_point.point.x, y=transformed_point.point.y, z=transformed_point.point.z + 0.2)
+            
+            pub.publish(point)
 
     cv2.destroyAllWindows()
 
