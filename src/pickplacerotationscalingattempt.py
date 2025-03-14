@@ -88,6 +88,37 @@ def main():
     bot = InterbotixManipulatorXS("wx250s", moving_time=1.5, accel_time=0.75)
     pcl = InterbotixPointCloudInterface()
 
+    # Callback function to handle tf_static data
+    def tf_static_callback(msg):
+        global transform
+        global linktransform
+        global opticaltransform
+        ftransform = None
+        for ftransform in msg.transforms: #These are rotation matrices from the tf_static topic, I think some combo should get us where we want?
+            if ftransform.header.frame_id == "camera_color_optical_frame" and ftransform.child_frame_id == "wx250s/base_link":
+                rospy.loginfo(f"Found static transform: {ftransform}")
+                transform = ftransform
+            if ftransform.header.frame_id == "camera_link" and ftransform.child_frame_id == "camera_color_frame":
+                rospy.loginfo(f"Found static transform: {ftransform}")
+                linktransform = ftransform
+            if ftransform.header.frame_id == "camera_color_frame" and ftransform.child_frame_id == "camera_color_optical_frame":
+                rospy.loginfo(f"Found static transform: {ftransform}")
+                opticaltransform = ftransform
+        return None
+
+    # Subscribe to tf_static to get the transform once
+    rospy.Subscriber("/tf_static", TFMessage, tf_static_callback)
+
+    # Wait for a valid transform from the topic
+    rospy.loginfo("Waiting for transform...")
+
+
+    while transform is None or linktransform is None or opticaltransform is None:
+        rospy.sleep(1)  # Sleep while waiting for transform
+
+    rospy.loginfo(f"Got transform: {transform}")
+
+
     # set initial arm and gripper pose
     bot.arm.set_ee_pose_components(x=0.3, z=0.2)
     bot.gripper.open()
@@ -168,22 +199,36 @@ def main():
                     if depth != 0:
                         depth_in_meters = depth * 0.001  # Convert to meters
                         # Now, we'll estimate the position of the object in 3D space based on the depth
+                        # You may need to calibrate this if necessary
 
-                        #THESE VALUES DO NOT MATCH THOSE OF PICK PLACE ORIGINAL -> NEED TO TRANSFORM TO ARM SPACE
+                        #THESE VALUES DO NOT MATCH THOSE OF PICK PLACE ORIGINAL< NEED TO TRANSFORM TO ARM SPACE
                         try:
                             x_position = center_x
                             y_position = center_y
                             z_position = depth_in_meters
 
                             print("X: ", x_position, "Y: ", y_position, "Z: ", z_position)
+                            point = frame_transform(x_position,y_position,z_position, linktransform)
+                            point = frame_transform(point[0],point[1],point[2], opticaltransform)
+                            point = frame_transform(point[0],point[1],point[2], transform)
 
+                            '''point = geometry_msgs.msg.PointStamped()
+                            point.header.stamp = rospy.Time(0)
+                            point.header.frame_id = 'camera_color_frame'
+                            point.point.x = x_position
+                            point.point.y = y_position
+                            point.point.z = z_position'''
 
                             '''point_base = tf_listener.transformPoint('camera_color_frame', point)
                             print("Transformed Point - X: ", point_base.point.x, " Y: ", point_base.point.y, " Z: ", point_base.point.z)'''
 
                             # The arm moves to the detected object's position
-                            bot.arm.set_ee_pose_components(x=x_position, y=y_position, z=z_position + 0.05, pitch=0.5)
+                            '''bot.arm.set_ee_pose_components(x=x_position, y=y_position, z=z_position + 0.05, pitch=0.5)
                             bot.arm.set_ee_pose_components(x=x_position, y=y_position, z=z_position, pitch=0.5)
+                            bot.gripper.close()'''
+                            print("Point: ", point)
+                            bot.arm.set_ee_pose_components(x=-point[0], y=point[1], z=point[2] + 0.05, pitch=0.5)
+                            bot.arm.set_ee_pose_components(x=-point[0], y=point[1], z=point[2], pitch=0.5)
                             bot.gripper.close()
 
                             # Move the arm to the brown box center to place the object
@@ -205,10 +250,10 @@ def main():
         code_running = False
 
         # Show the frame with detected red objects
-        '''red_mask_out = color_image.copy()
+        red_mask_out = color_image.copy()
         red_mask_out[np.where(red_mask==0)] = 0
         cv2.imshow("Detected Red Objects", red_mask_out)
-        cv2.waitKey(1)  # Refresh window and handle key events'''
+        cv2.waitKey(1)  # Refresh window and handle key events
 
     cv2.destroyAllWindows()
 
