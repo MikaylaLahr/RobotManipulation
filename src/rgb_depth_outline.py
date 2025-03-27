@@ -49,6 +49,9 @@ try:
 
         contours_red, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+        red_area = np.count_nonzero(red_mask)
+        print(red_area)
+
         # Black cube masking
         low_mask = np.array([0, 0, 0])
         hi_mask = np.array([180, 140, 100])
@@ -60,6 +63,19 @@ try:
         black_mask_out[black_mask == 0] = 0
 
         contours_black, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Blue cube masking
+        low_mask = np.array([100, 150, 50])
+        hi_mask = np.array([140, 255, 255])
+        blue_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
+        kernel = np.ones((5, 5), np.uint8)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+        blue_mask = blue_mask & depth_mask
+        blue_mask_out = color_image.copy()
+        blue_mask_out[blue_mask == 0] = 0
+
+        contours_blue, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
 
         # Convert the frame to grayscale
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
@@ -92,6 +108,14 @@ try:
                 cv2.circle(masked_contour_overlay,(center_x,center_y),5,(0,255,255),-1)
 
         for contour in contours_red:
+            if cv2.contourArea(contour) > 500:
+                x,y,w,h = cv2.boundingRect(contour)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                cv2.polylines(masked_contour_overlay, [contour], isClosed=True, color=(0, 255, 0), thickness=2)
+                cv2.circle(masked_contour_overlay,(center_x,center_y),5,(0,255,0),-1)
+
+        for contour in contours_blue:
             if cv2.contourArea(contour) > 500:
                 x,y,w,h = cv2.boundingRect(contour)
                 center_x = x + w // 2
@@ -141,6 +165,8 @@ try:
         cv2.imshow("Contours found from thresholded images", masked_contour_overlay)
         cv2.imshow("Red mask", red_mask_out)
         cv2.imshow("Black cube mask", black_mask_out)
+        cv2.imshow("Blue cube mask", blue_mask_out)
+        cv2.imshow("Blue cube mask", red_mask_out+blue_mask_out)
         cv2.imshow("Depth mask", depth_mask)
 
         # Exit the loop if the user presses 'q'
