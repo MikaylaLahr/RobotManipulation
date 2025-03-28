@@ -4,6 +4,16 @@
   <!-- Launch the pick_place.py node -->
   <node pkg="robot_manipulation" type="pick_place.py" name="pick_place_node" output="screen">
   </node>
+
+  <!-- <node pkg="robot_manipulation" type="box_detector.py" name="box_detector_node" output="screen">
+    <remap from="/detections" to="/box_detector/detections"/>
+    <remap from="/debug" to="/box_detector/debug"/>
+  </node> -->
+
+  <!-- <node pkg="robot_manipulation" type="box_detector2.py" name="box_detector_node" output="screen">
+    <remap from="/point_cloud" to="/camera/depth/color/points" />
+    <remap from="/debug" to="/box_detector/debug"/>
+  </node> -->
   
   <!-- Launch the xsarm_perception.launch file -->
   <include file="$(find robot_manipulation)/launch/xsarm_perception.launch">

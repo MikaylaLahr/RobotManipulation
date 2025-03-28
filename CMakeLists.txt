@@ -159,6 +159,8 @@ include_directories(
 ## in contrast to setup.py, you can choose the destination
 catkin_install_python(PROGRAMS
   src/pick_place.py
+  src/box_detector.py
+  src/box_detector2.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
