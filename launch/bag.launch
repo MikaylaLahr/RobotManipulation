@@ -1,0 +1,33 @@
+<launch>
+
+  <!-- Define arguments, similar to xsarm_perception.launch for consistency -->
+  <arg name="robot_model"                       default="wx250s"/> <!-- Example model, adjust if needed -->
+  <arg name="robot_name"                        default="$(arg robot_model)"/>
+  <arg name="base_link_frame"                   default="base_link"/>
+  <arg name="use_rviz"                          default="true"/>
+  <arg name="rviz_frame"                        default="$(arg robot_name)/$(arg base_link_frame)"/>
+  <arg name="rvizconfig"                        default="$(find interbotix_xsarm_perception)/rviz/xsarm_perception.rviz" />
+
+  <!-- Launch the box_detector C++ node -->
+  <node name="box_detector_node" pkg="robot_manipulation" type="box_detector" output="screen">
+    <remap from="/point_cloud" to="/camera/depth/color/points" />
+    <remap from="/rviz_debug" to="/box_detector/rviz_debug" />
+    <remap from="/filtered_point_cloud" to="/box_detector/filtered" />
+    <remap from="/detections" to="/box_detector/detections" />
+  </node>
+
+  <!-- Run rosbag play on the first bag file -->
+  <!-- Note: Adjust the bag file name if needed -->
+  <node name="rosbag_play" pkg="rosbag" type="play"
+        args="--clock $(find robot_manipulation)/bags/2025-03-28-10-50-22.bag"
+        required="true"/> <!-- Use required=true if the launch should exit when bag finishes -->
+
+  <!-- Launch RViz, similar to xsarm_perception.launch -->
+  <node if="$(arg use_rviz)"
+    name="rviz"
+    pkg="rviz"
+    type="rviz"
+    args="-f $(arg rviz_frame) -d $(arg rvizconfig)"
+    ns="$(arg robot_name)"/>
+
+</launch>

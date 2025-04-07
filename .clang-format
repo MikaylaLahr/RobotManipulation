@@ -1,0 +1,26 @@
+BasedOnStyle: Google
+IndentWidth: 4
+Language: Cpp
+UseTab: Never
+DerivePointerAlignment: false
+PointerAlignment: Left
+BreakStringLiterals: true
+ReflowComments: true
+ContinuationIndentWidth: 4
+ColumnLimit: 100
+AlignAfterOpenBracket: DontAlign
+BreakBeforeBinaryOperators: NonAssignment
+PenaltyBreakAssignment: 60
+IndentCaseLabels: true
+AllowShortFunctionsOnASingleLine: Empty
+SortIncludes: false
+MacroBlockBegin: "^#if .*$"
+MacroBlockEnd: "^#endif$"
+AlignEscapedNewlines: Right
+IndentPPDirectives: BeforeHash
+AccessModifierOffset: -4
+SpaceBeforeRangeBasedForLoopColon: false
+SpaceBeforeCtorInitializerColon: false
+SpaceAfterTemplateKeyword: false
+NamespaceIndentation: All
+FixNamespaceComments: false
