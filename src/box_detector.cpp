@@ -20,12 +20,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <iterator>
 #include <string>
 #include <optional>
 #include <vector>
-#include <map>  // Added for grouping points by cluster
+#include <map>
 #include "ros/console.h"
+
+struct Track {
+    size_t id;
+    bool active;
+    open3d::geometry::OrientedBoundingBox bbox;
+    ros::Time last_detected;
+};
 
 class BoxDetector {
 public:
@@ -51,7 +57,7 @@ public:
 
         auto transformed_opt = transform_point_cloud(*cloud_msg, base_link_frame_);
         if (!transformed_opt) {
-            ROS_WARN_THROTTLE(3, "Unable to transform point cloud.");
+            return;
         }
 
         sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
@@ -63,63 +69,120 @@ public:
 
         auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 5);
         auto boxes = detect_boxes(cluster_clouds);
-        ROS_INFO("Found %zu boxes from %zu clusters.", boxes.size(), cluster_clouds.size());
+        ROS_DEBUG("Found %zu boxes from %zu clusters.", boxes.size(), cluster_clouds.size());
 
-        vision_msgs::Detection3DArray detection_array;
-        detection_array.header = transformed.header;  // Use the header from the transformed cloud
-
-        for (const auto& obb: boxes) {
-            Eigen::Vector3d center = obb.center_;
-            Eigen::Vector3d extent = obb.extent_;  // Full size (max - min) along oriented axes
-            Eigen::Matrix3d rotation = obb.R_;
-
-            Eigen::Isometry3d pose;
-            pose.linear() = rotation;
-            pose.translation() = center;
-
-            // Create Detection3D message
-            vision_msgs::Detection3D detection;
-            detection.header = transformed.header;  // Match the array header
-
-            // Create and populate BoundingBox3D
-            vision_msgs::BoundingBox3D bbox;
-            bbox.center = tf2::toMsg(pose);
-            bbox.size.x = extent.x();
-            bbox.size.y = extent.y();
-            bbox.size.z = extent.z();
-
-            detection.bbox = bbox;
-
-            detection_array.detections.push_back(detection);
-        }
-
-        // Draw the detections
-        draw_detections(detection_array);
-
-        open3d::geometry::PointCloud joined;
-        for (auto& p: cluster_clouds) {
-            std::copy(p.points_.begin(), p.points_.end(), std::back_inserter(joined.points_));
-            std::copy(p.colors_.begin(), p.colors_.end(), std::back_inserter(joined.colors_));
-        }
+        update_tracks(boxes, transformed.header.stamp);
+        vision_msgs::Detection3DArray detection_array = convert_tracks_to_ros(transformed.header);
+        draw_tracks();
 
         detection_pub_.publish(detection_array);
-        filtered_pub_.publish(convert_cloud_open3d_to_ros(joined, transformed.header));
+        filtered_pub_.publish(filtered_ros_cloud);
 
         visual_tools_->trigger();
     }
 
 private:
-    void draw_detections(const vision_msgs::Detection3DArray& detections) {
-        for (const auto& detection: detections.detections) {
-            const auto& bbox = detection.bbox;
+    void draw_tracks() {
+        for (const auto& track: tracks_) {
             Eigen::Isometry3d pose;
-            tf2::fromMsg(bbox.center, pose);
-            Eigen::Vector3d size;
-            tf2::fromMsg(bbox.size, size);
+            pose.linear() = track.bbox.R_;
+            pose.translation() = track.bbox.center_;
+            Eigen::Vector3d size = track.bbox.extent_;
 
-            visual_tools_->publishWireframeCuboid(pose, size.x(), size.y(), size.z());
+            auto box_color = track.active ? rviz_visual_tools::BLUE : rviz_visual_tools::ORANGE;
+            visual_tools_->publishWireframeCuboid(pose, size.x(), size.y(), size.z(), box_color);
             visual_tools_->publishAxis(pose, rviz_visual_tools::SMALL);
+
+            Eigen::Isometry3d text_pose = pose;
+            text_pose.translation() += Eigen::Vector3d(0, 0, 0.1);
+            visual_tools_->publishText(text_pose, std::to_string(track.id),
+                rviz_visual_tools::WHITE, rviz_visual_tools::LARGE, false);
         }
+    }
+
+    vision_msgs::Detection3DArray convert_tracks_to_ros(std_msgs::Header header) {
+        vision_msgs::Detection3DArray detection_array;
+        detection_array.header = header;
+
+        for (const auto& track: tracks_) {
+            Eigen::Vector3d center = track.bbox.center_;
+            Eigen::Vector3d extent = track.bbox.extent_;
+            Eigen::Matrix3d rotation = track.bbox.R_;
+
+            Eigen::Isometry3d pose;
+            pose.linear() = rotation;
+            pose.translation() = center;
+
+            vision_msgs::Detection3D detection;
+            detection.header = header;
+
+            vision_msgs::BoundingBox3D bbox;
+            bbox.center = tf2::toMsg(pose);
+            bbox.size.x = extent.x();
+            bbox.size.y = extent.y();
+            bbox.size.z = extent.z();
+            detection.bbox = bbox;
+
+            vision_msgs::ObjectHypothesisWithPose hypothesis;
+            hypothesis.id = track.id;
+            hypothesis.pose.pose = tf2::toMsg(pose);
+            hypothesis.score = 1.0;
+            detection.results.push_back(hypothesis);
+
+            detection_array.detections.push_back(detection);
+        }
+
+        return detection_array;
+    }
+
+    void update_tracks(const std::vector<open3d::geometry::OrientedBoundingBox>& detections,
+        ros::Time detection_time) {
+        size_t start_size = tracks_.size();
+
+        std::vector<bool> claimed(start_size, false);
+
+        for (const auto& detection: detections) {
+            bool correspondence_found = false;
+
+            for (size_t i = 0; i < start_size; i++) {
+                Eigen::Vector3d delta = detection.center_ - tracks_[i].bbox.center_;
+                if (!claimed[i] && delta.norm() < 0.02) {
+                    correspondence_found = true;
+                    claimed[i] = true;
+                    tracks_[i].active = true;
+                    tracks_[i].last_detected = detection_time;
+                    tracks_[i].bbox = detection;
+                    break;
+                }
+            }
+
+            if (!correspondence_found) {
+                tracks_.push_back({
+                    next_id++,
+                    true,
+                    detection,
+                    detection_time,
+                });
+            }
+        }
+
+        for (size_t i = 0; i < start_size; i++) {
+            if (!claimed[i]) {
+                tracks_[i].active = false;
+            }
+        }
+
+        std::vector<Track> recent_tracks;
+        recent_tracks.reserve(tracks_.size());
+        for (const auto& track: tracks_) {
+            if (!track.active && track.last_detected - detection_time > ros::Duration(30)) {
+                continue;
+            }
+
+            recent_tracks.push_back(track);
+        }
+
+        tracks_ = std::move(recent_tracks);
     }
 
     std::vector<open3d::geometry::OrientedBoundingBox> detect_boxes(
@@ -274,7 +337,7 @@ private:
 
         if (delta > 1e-6) {  // If color is not grayscale
             if (max_val == r) {
-                h = 60.0 * fmod(((g - b) / delta), 6.0);
+                h = 60.0 * std::fmod(((g - b) / delta), 6.0);
             } else if (max_val == g) {
                 h = 60.0 * (((b - r) / delta) + 2.0);
             } else {  // max_val == b
@@ -451,6 +514,7 @@ private:
             // Transform the point cloud
             tf2::doTransform(msg, cloud_transformed, transformStamped);
         } catch (tf2::TransformException& ex) {
+            ROS_WARN_THROTTLE(3, "Unable to transform point cloud. Reason: %s", ex.what());
             return {};
         }
         return cloud_transformed;
@@ -460,6 +524,9 @@ private:
     ros::Subscriber sub_;
     ros::Publisher filtered_pub_;
     ros::Publisher detection_pub_;
+
+    size_t next_id = 0;
+    std::vector<Track> tracks_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
