@@ -56,11 +56,12 @@ public:
 
         sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
         open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
-        open3d::geometry::PointCloud filtered_cloud = filter_red_points_hsv(o3d_cloud);
+        open3d::geometry::PointCloud downsampled = *o3d_cloud.UniformDownSample(10);
+        open3d::geometry::PointCloud filtered_cloud = filter_red_points_hsv(downsampled);
         sensor_msgs::PointCloud2 filtered_ros_cloud = convert_cloud_open3d_to_ros(
             filtered_cloud, transformed.header);
 
-        auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 50);
+        auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 5);
         auto boxes = detect_boxes(cluster_clouds);
         ROS_INFO("Found %zu boxes from %zu clusters.", boxes.size(), cluster_clouds.size());
 
@@ -68,7 +69,6 @@ public:
         detection_array.header = transformed.header;  // Use the header from the transformed cloud
 
         for (const auto& obb: boxes) {
-            // Calculate Oriented Bounding Box (OBB)
             Eigen::Vector3d center = obb.center_;
             Eigen::Vector3d extent = obb.extent_;  // Full size (max - min) along oriented axes
             Eigen::Matrix3d rotation = obb.R_;
@@ -98,8 +98,6 @@ public:
 
         open3d::geometry::PointCloud joined;
         for (auto& p: cluster_clouds) {
-            auto color = (Eigen::Vector3d::Random() + Eigen::Vector3d::Ones()) / 2;
-            p.PaintUniformColor(color);
             std::copy(p.points_.begin(), p.points_.end(), std::back_inserter(joined.points_));
             std::copy(p.colors_.begin(), p.colors_.end(), std::back_inserter(joined.colors_));
         }
@@ -120,7 +118,7 @@ private:
             tf2::fromMsg(bbox.size, size);
 
             visual_tools_->publishWireframeCuboid(pose, size.x(), size.y(), size.z());
-            visual_tools_->publishAxis(pose);
+            visual_tools_->publishAxis(pose, rviz_visual_tools::SMALL);
         }
     }
 
@@ -129,6 +127,16 @@ private:
         std::vector<open3d::geometry::OrientedBoundingBox> boxes;
         for (const auto& cluster: clusters) {
             open3d::geometry::OrientedBoundingBox obb = z_axis_bounding_box(cluster);
+
+            // snap to ground
+            double height = obb.GetMaxBound().z();
+            obb.extent_.z() = height;
+            obb.center_.z() = height / 2;
+
+            if (obb.Volume() < 0.07 * 0.07 * 0.07) {
+                continue;
+            }
+
             boxes.push_back(obb);
         }
 
