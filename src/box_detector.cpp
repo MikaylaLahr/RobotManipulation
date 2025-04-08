@@ -14,6 +14,8 @@
 #include <tf2_eigen/tf2_eigen.h>
 
 #include <open3d/Open3D.h>
+#include <opencv2/core/types.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -23,9 +25,7 @@
 #include <optional>
 #include <vector>
 #include <map>  // Added for grouping points by cluster
-#include "Eigen/src/Core/Matrix.h"
-#include "Eigen/src/Geometry/AngleAxis.h"
-#include "Eigen/src/Geometry/Transform.h"
+#include "ros/console.h"
 
 class BoxDetector {
 public:
@@ -128,21 +128,32 @@ private:
         const std::vector<open3d::geometry::PointCloud>& clusters) {
         std::vector<open3d::geometry::OrientedBoundingBox> boxes;
         for (const auto& cluster: clusters) {
-            // auto [pc, _] = cluster.RemoveRadiusOutliers(100, 0.01);
-            open3d::geometry::OrientedBoundingBox obb = cluster.GetMinimalOrientedBoundingBox(true);
-
-            Eigen::Quaterniond quat(obb.R_);
-            Eigen::Vector3d ra(quat.x(), quat.y(), quat.z());
-            Eigen::Vector3d direction = Eigen::Vector3d::UnitZ();
-            Eigen::Vector3d projection = (ra.dot(direction) / direction.squaredNorm()) * direction;
-            Eigen::Quaterniond twist(projection.x(), projection.y(), projection.z(), quat.w());
-
-            // obb.R_ = twist.normalized();
-
+            open3d::geometry::OrientedBoundingBox obb = z_axis_bounding_box(cluster);
             boxes.push_back(obb);
         }
 
         return boxes;
+    }
+
+    open3d::geometry::OrientedBoundingBox z_axis_bounding_box(
+        const open3d::geometry::PointCloud& pc) {
+        std::vector<cv::Point2f> projected(pc.points_.size());
+
+        for (size_t i = 0; i < pc.points_.size(); ++i) {
+            Eigen::Vector3d point = pc.points_[i];
+            projected[i] = cv::Point2f(point.x(), point.y());
+        }
+
+        cv::RotatedRect rect = cv::minAreaRect(projected);
+
+        double z_extent = pc.GetMaxBound().z() - pc.GetMinBound().z();
+
+        Eigen::Vector3d center(rect.center.x, rect.center.y, z_extent / 2 + pc.GetMinBound().z());
+        Eigen::Matrix3d rotation(
+            Eigen::AngleAxisd(rect.angle * M_PI / 180.0, Eigen::Vector3d::UnitZ()));
+        Eigen::Vector3d extent(rect.size.width, rect.size.height, z_extent);
+
+        return open3d::geometry::OrientedBoundingBox(center, rotation, extent);
     }
 
     std::vector<open3d::geometry::PointCloud> cluster_cloud(
