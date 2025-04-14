@@ -1,3 +1,13 @@
+#include <open3d/geometry/BoundingVolume.h>
+#include <open3d/geometry/PointCloud.h>
+#include <open3d/geometry/TriangleMesh.h>
+#include <open3d/io/FileFormatIO.h>
+#include <open3d/io/ModelIO.h>
+#include <open3d/io/TriangleMeshIO.h>
+#include <open3d/pipelines/registration/FastGlobalRegistration.h>
+#include <open3d/pipelines/registration/Feature.h>
+#include <open3d/pipelines/registration/Registration.h>
+#include <open3d/pipelines/registration/TransformationEstimation.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
@@ -22,24 +32,37 @@
 #include <optional>
 #include <vector>
 #include <map>
+#include "Eigen/src/Geometry/Transform.h"
+#include "ros/console.h"
 
 struct Track {
     size_t id;
     bool active;
-    open3d::geometry::OrientedBoundingBox bbox;
+    Eigen::Isometry3d pose;
     ros::Time last_detected;
 };
 
-class BoxDetector {
+class ObjectRegistration {
 public:
-    BoxDetector(): nh_("~"), tf_listener_(tf_buffer_) {
-        // Subscribe to the input point cloud topic
-        sub_ = nh_.subscribe("/point_cloud", 1, &BoxDetector::point_cloud_callback, this);
+    ObjectRegistration(): nh_("~"), tf_listener_(tf_buffer_) {
+        sub_ = nh_.subscribe("/point_cloud", 1, &ObjectRegistration::point_cloud_callback, this);
         filtered_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/filtered_point_cloud", 1);
         detection_pub_ = nh_.advertise<vision_msgs::Detection3DArray>("/detections", 1);
 
         visual_tools_.reset(
-            new rviz_visual_tools::RvizVisualTools(base_link_frame_, "/rviz_debug"));
+            new rviz_visual_tools::RvizVisualTools(base_link_frame_, "/rviz_debug", nh_));
+
+        nh_.getParam("cube_mesh_path", cube_mesh_path_);
+
+        open3d::io::ReadTriangleMeshOptions options;
+        options.enable_post_processing = false;
+        options.print_progress = false;
+
+        open3d::geometry::TriangleMesh cube_mesh;
+        open3d::io::ReadTriangleMesh(cube_mesh_path_, cube_mesh, options);
+
+        cube_mesh_cloud_ = *cube_mesh.SamplePointsUniformly(1000, true);
+        cube_features_ = *open3d::pipelines::registration::ComputeFPFHFeature(cube_mesh_cloud_);
 
         ROS_INFO("Box detector node initialized.");
         ROS_INFO("Using frame %s as base link.", base_link_frame_.c_str());
@@ -59,20 +82,18 @@ public:
 
         sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
         open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
-        open3d::geometry::PointCloud downsampled = *o3d_cloud.UniformDownSample(10);
-        open3d::geometry::PointCloud filtered_cloud = filter_red_points_hsv(downsampled);
+        open3d::geometry::PointCloud downsampled = *o3d_cloud.UniformDownSample(5);
+        open3d::geometry::PointCloud filtered_cloud = filter_blue_points_hsv(downsampled);
         sensor_msgs::PointCloud2 filtered_ros_cloud = convert_cloud_open3d_to_ros(
             filtered_cloud, transformed.header);
 
-        auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 5);
-        auto boxes = detect_boxes(cluster_clouds);
-        ROS_DEBUG("Found %zu boxes from %zu clusters.", boxes.size(), cluster_clouds.size());
+        auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 10);
+        auto cubes = detect_cubes(cluster_clouds);
+        ROS_DEBUG("Found %zu objects from %zu clusters.", cubes.size(), cluster_clouds.size());
 
-        update_tracks(boxes, transformed.header.stamp);
-        vision_msgs::Detection3DArray detection_array = convert_tracks_to_ros(transformed.header);
+        update_tracks(cubes, cloud_msg->header.stamp);
         draw_tracks();
 
-        detection_pub_.publish(detection_array);
         filtered_pub_.publish(filtered_ros_cloud);
 
         visual_tools_->trigger();
@@ -81,19 +102,18 @@ public:
 private:
     void draw_tracks() {
         for (const auto& track: tracks_) {
-            Eigen::Isometry3d pose;
-            pose.linear() = track.bbox.R_;
-            pose.translation() = track.bbox.center_;
-            Eigen::Vector3d size = track.bbox.extent_;
+            if (!track.active) {
+                continue;
+            }
 
-            auto box_color = track.active ? rviz_visual_tools::BLUE : rviz_visual_tools::ORANGE;
-            visual_tools_->publishWireframeCuboid(pose, size.x(), size.y(), size.z(), box_color);
-            visual_tools_->publishAxis(pose, rviz_visual_tools::SMALL);
+            Eigen::Isometry3d pose = track.pose;
+            visual_tools_->publishMesh(pose, std::string("file://") + cube_mesh_path_,
+                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id);
 
             Eigen::Isometry3d text_pose = pose;
             text_pose.translation() += Eigen::Vector3d(0, 0, 0.1);
             visual_tools_->publishText(text_pose, std::to_string(track.id),
-                rviz_visual_tools::WHITE, rviz_visual_tools::LARGE, false);
+                rviz_visual_tools::WHITE, rviz_visual_tools::MEDIUM, false);
         }
     }
 
@@ -102,27 +122,20 @@ private:
         detection_array.header = header;
 
         for (const auto& track: tracks_) {
-            Eigen::Vector3d center = track.bbox.center_;
-            Eigen::Vector3d extent = track.bbox.extent_;
-            Eigen::Matrix3d rotation = track.bbox.R_;
-
-            Eigen::Isometry3d pose;
-            pose.linear() = rotation;
-            pose.translation() = center;
+            if (!track.active) {
+                continue;
+            }
 
             vision_msgs::Detection3D detection;
             detection.header = header;
 
             vision_msgs::BoundingBox3D bbox;
-            bbox.center = tf2::toMsg(pose);
-            bbox.size.x = extent.x();
-            bbox.size.y = extent.y();
-            bbox.size.z = extent.z();
+            bbox.center = tf2::toMsg(track.pose);
             detection.bbox = bbox;
 
             vision_msgs::ObjectHypothesisWithPose hypothesis;
             hypothesis.id = track.id;
-            hypothesis.pose.pose = tf2::toMsg(pose);
+            hypothesis.pose.pose = tf2::toMsg(track.pose);
             hypothesis.score = 1.0;
             detection.results.push_back(hypothesis);
 
@@ -132,8 +145,7 @@ private:
         return detection_array;
     }
 
-    void update_tracks(const std::vector<open3d::geometry::OrientedBoundingBox>& detections,
-        ros::Time detection_time) {
+    void update_tracks(const std::vector<Eigen::Isometry3d>& detections, ros::Time detection_time) {
         size_t start_size = tracks_.size();
 
         std::vector<bool> claimed(start_size, false);
@@ -142,13 +154,14 @@ private:
             bool correspondence_found = false;
 
             for (size_t i = 0; i < start_size; i++) {
-                Eigen::Vector3d delta = detection.center_ - tracks_[i].bbox.center_;
-                if (!claimed[i] && delta.norm() < 0.02) {
+                Eigen::Vector3d delta = detection.translation() - tracks_[i].pose.translation();
+
+                if (!claimed[i] && delta.norm() < 0.05) {
                     correspondence_found = true;
                     claimed[i] = true;
                     tracks_[i].active = true;
                     tracks_[i].last_detected = detection_time;
-                    tracks_[i].bbox = detection;
+                    tracks_[i].pose = detection;
                     break;
                 }
             }
@@ -182,46 +195,41 @@ private:
         tracks_ = std::move(recent_tracks);
     }
 
-    std::vector<open3d::geometry::OrientedBoundingBox> detect_boxes(
-        const std::vector<open3d::geometry::PointCloud>& clusters) {
-        std::vector<open3d::geometry::OrientedBoundingBox> boxes;
-        for (const auto& cluster: clusters) {
-            open3d::geometry::OrientedBoundingBox obb = z_axis_bounding_box(cluster);
+    std::vector<Eigen::Isometry3d> detect_cubes(
+        std::vector<open3d::geometry::PointCloud>& clusters) {
+        std::vector<Eigen::Isometry3d> cubes;
+        for (auto& cluster: clusters) {
+            if (cluster.points_.size() < 100) continue;
 
-            // snap to ground
-            double height = obb.GetMaxBound().z();
-            obb.extent_.z() = height;
-            obb.center_.z() = height / 2;
+            cluster.EstimateNormals();
+            auto cluster_features = *open3d::pipelines::registration::ComputeFPFHFeature(cluster);
 
-            if (obb.Volume() < 0.07 * 0.07 * 0.07) {
-                continue;
+            try {
+                open3d::pipelines::registration::RANSACConvergenceCriteria criteria(1000, 1.0);
+                auto result =
+                    open3d::pipelines::registration::RegistrationRANSACBasedOnFeatureMatching(
+                        cluster, cube_mesh_cloud_, cluster_features, cube_features_, false, 0.1,
+                        open3d::pipelines::registration::TransformationEstimationPointToPoint(
+                            false),
+                        3, {}, criteria);
+
+                auto local_result = open3d::pipelines::registration::RegistrationICP(
+                    cluster, cube_mesh_cloud_, 0.1, result.transformation_);
+
+                if (local_result.inlier_rmse_ > 0.005) {
+                    continue;
+                }
+
+                Eigen::Isometry3d transform(local_result.transformation_);
+                Eigen::Isometry3d pose = transform.inverse();
+
+                cubes.push_back(pose);
+            } catch (...) {
+                ROS_WARN("Failed to align scans!");
             }
-
-            boxes.push_back(obb);
         }
 
-        return boxes;
-    }
-
-    open3d::geometry::OrientedBoundingBox z_axis_bounding_box(
-        const open3d::geometry::PointCloud& pc) {
-        std::vector<cv::Point2f> projected(pc.points_.size());
-
-        for (size_t i = 0; i < pc.points_.size(); ++i) {
-            Eigen::Vector3d point = pc.points_[i];
-            projected[i] = cv::Point2f(point.x(), point.y());
-        }
-
-        cv::RotatedRect rect = cv::minAreaRect(projected);
-
-        double z_extent = pc.GetMaxBound().z() - pc.GetMinBound().z();
-
-        Eigen::Vector3d center(rect.center.x, rect.center.y, z_extent / 2 + pc.GetMinBound().z());
-        Eigen::Matrix3d rotation(
-            Eigen::AngleAxisd(rect.angle * M_PI / 180.0, Eigen::Vector3d::UnitZ()));
-        Eigen::Vector3d extent(rect.size.width, rect.size.height, z_extent);
-
-        return open3d::geometry::OrientedBoundingBox(center, rotation, extent);
+        return cubes;
     }
 
     std::vector<open3d::geometry::PointCloud> cluster_cloud(
@@ -262,7 +270,7 @@ private:
         return cluster_clouds;
     }
 
-    open3d::geometry::PointCloud filter_red_points_hsv(
+    open3d::geometry::PointCloud filter_blue_points_hsv(
         const open3d::geometry::PointCloud& input_cloud) {
         open3d::geometry::PointCloud filtered_cloud;
 
@@ -274,21 +282,12 @@ private:
         filtered_cloud.points_.reserve(input_cloud.points_.size());  // Reserve capacity
         filtered_cloud.colors_.reserve(input_cloud.colors_.size());
 
-        // Define HSV Thresholds (converted from OpenCV's 0-179 H, 0-255 S/V)
-        // Range 1: H [0, 10], S [140, 255], V [20, 255]
-        const double h_low1 = 0.0;
-        const double h_high1 = (10.0 / 179.0) * 360.0;  // ~20.1 degrees
-        const double s_low1 = 140.0 / 255.0;            // ~0.55
-        const double v_low1 = 20.0 / 255.0;             // ~0.08
-        const double s_high = 1.0;                      // 255/255
-        const double v_high = 1.0;                      // 255/255
-
-        // Range 2: H [170, 180], S [140, 255], V [20, 255]
-        const double h_low2 = (170.0 / 179.0) * 360.0;  // ~341.9 degrees
-        const double h_high2 = 360.0;                   // Up to 360 (exclusive)
-        // S and V ranges are the same as range 1
-        const double s_low2 = s_low1;
-        const double v_low2 = v_low1;
+        const double h_low = (100.0 / 179.0) * 360.0;
+        const double h_high = (140.0 / 179.0) * 360.0;
+        const double s_low = 150.0 / 255.0;
+        const double s_high = 1.0;
+        const double v_low = 20.0 / 255.0;
+        const double v_high = 1.0;
 
         for (size_t i = 0; i < input_cloud.points_.size(); ++i) {
             const Eigen::Vector3d& rgb = input_cloud.colors_[i];
@@ -297,14 +296,10 @@ private:
             auto [h, s, v] = rgb_to_hsv(rgb.x(), rgb.y(), rgb.z());
 
             // Check if the point falls within either red range
-            bool in_range1 = (h >= h_low1 && h <= h_high1 && s >= s_low1 && s <= s_high
-                              && v >= v_low1 && v <= v_high);
+            bool in_range = (h >= h_low && h <= h_high && s >= s_low && s <= s_high && v >= v_low
+                             && v <= v_high);
 
-            bool in_range2 = (h >= h_low2 && h < h_high2
-                              &&  // Use < for high end of hue wrap-around
-                              s >= s_low2 && s <= s_high && v >= v_low2 && v <= v_high);
-
-            if (in_range1 || in_range2) {
+            if (in_range) {
                 // Keep the point if it's in either range
                 filtered_cloud.points_.push_back(input_cloud.points_[i]);
                 filtered_cloud.colors_.push_back(
@@ -530,11 +525,15 @@ private:
     std::string base_link_frame_ = "wx250s/base_link";
 
     rviz_visual_tools::RvizVisualToolsPtr visual_tools_;
+
+    std::string cube_mesh_path_;
+    open3d::geometry::PointCloud cube_mesh_cloud_;
+    open3d::pipelines::registration::Feature cube_features_;
 };
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "box_detector_node");
-    BoxDetector loader;
+    ObjectRegistration loader;
     ros::spin();
     return 0;
 }
