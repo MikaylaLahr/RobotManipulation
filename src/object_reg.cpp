@@ -205,16 +205,16 @@ private:
             auto cluster_features = *open3d::pipelines::registration::ComputeFPFHFeature(cluster);
 
             try {
-                open3d::pipelines::registration::RANSACConvergenceCriteria criteria(1000, 1.0);
+                open3d::pipelines::registration::RANSACConvergenceCriteria criteria(1000, 0.99);
                 auto result =
                     open3d::pipelines::registration::RegistrationRANSACBasedOnFeatureMatching(
-                        cluster, cube_mesh_cloud_, cluster_features, cube_features_, false, 0.1,
-                        open3d::pipelines::registration::TransformationEstimationPointToPoint(
-                            false),
-                        3, {}, criteria);
+                        cluster, cube_mesh_cloud_, cluster_features, cube_features_, false, 0.025,
+                        open3d::pipelines::registration::TransformationEstimationPointToPoint(), 3,
+                        {}, criteria);
 
-                auto local_result = open3d::pipelines::registration::RegistrationICP(
-                    cluster, cube_mesh_cloud_, 0.1, result.transformation_);
+                auto local_result = open3d::pipelines::registration::RegistrationICP(cluster,
+                    cube_mesh_cloud_, 0.01, result.transformation_,
+                    open3d::pipelines::registration::TransformationEstimationPointToPlane());
 
                 if (local_result.inlier_rmse_ > 0.005) {
                     continue;

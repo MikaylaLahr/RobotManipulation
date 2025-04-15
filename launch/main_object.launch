@@ -1,20 +1,14 @@
 <launch>
   <arg name="use_sim" default="true" />
-
-  <!-- Launch the pick_place.py node -->
-  <node pkg="robot_manipulation" type="pick_place.py" name="pick_place_node" output="screen">
+  
+  <node name="object_reg_node" pkg="robot_manipulation" type="object_reg" output="screen">
+    <param name="cube_mesh_path" type="str" value="$(find robot_manipulation)/resources/cube.stl" />
+    <remap from="/point_cloud" to="/camera/depth/color/points" />
+    <remap from="/rviz_debug" to="/object_reg/rviz_debug" />
+    <remap from="/filtered_point_cloud" to="/object_reg/filtered" />
+    <remap from="/detections" to="/object_reg/detections" />
   </node>
 
-  <!-- <node pkg="robot_manipulation" type="box_detector.py" name="box_detector_node" output="screen">
-    <remap from="/detections" to="/box_detector/detections"/>
-    <remap from="/debug" to="/box_detector/debug"/>
-  </node> -->
-
-  <!-- <node pkg="robot_manipulation" type="box_detector2.py" name="box_detector_node" output="screen">
-    <remap from="/point_cloud" to="/camera/depth/color/points" />
-    <remap from="/debug" to="/box_detector/debug"/>
-  </node> -->
-  
   <!-- Launch the base functionality -->
   <include file="$(find robot_manipulation)/launch/base.launch">
     <arg name="use_rviz" value="true" />
