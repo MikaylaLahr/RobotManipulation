@@ -1,12 +1,13 @@
 Panels:
   - Class: rviz/Displays
-    Help Height: 78
+    Help Height: 109
     Name: Displays
     Property Tree Widget:
       Expanded:
+        - /Top Camera Image1
         - /PointCloud21
       Splitter Ratio: 0.5777778029441833
-    Tree Height: 439
+    Tree Height: 790
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -24,7 +25,10 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: Image
+    SyncSource: Side Camera Image
+  - Class: interbotix_xs_rviz/Interbotix Control Panel
+    Name: Interbotix Control Panel
+    RobotNameSpace: /wx250s
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -145,17 +149,17 @@ Visualization Manager:
       Frame Timeout: 60
       Frames:
         All Enabled: false
-        camera_aligned_depth_to_color_frame:
+        camera1_aligned_depth_to_color_frame:
           Value: true
-        camera_color_frame:
+        camera1_color_frame:
           Value: true
-        camera_color_optical_frame:
+        camera1_color_optical_frame:
           Value: true
-        camera_depth_frame:
+        camera1_depth_frame:
           Value: true
-        camera_depth_optical_frame:
+        camera1_depth_optical_frame:
           Value: true
-        camera_link:
+        camera1_link:
           Value: true
         wx250s/ar_tag_link:
           Value: true
@@ -194,147 +198,69 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
-        camera_link:
-          camera_aligned_depth_to_color_frame:
-            camera_color_optical_frame:
-              wx250s/base_link:
-                wx250s/shoulder_link:
-                  wx250s/upper_arm_link:
-                    wx250s/upper_forearm_link:
-                      wx250s/lower_forearm_link:
-                        wx250s/wrist_link:
-                          wx250s/gripper_link:
-                            wx250s/ee_arm_link:
-                              wx250s/ar_tag_link:
-                                {}
-                              wx250s/gripper_bar_link:
-                                wx250s/fingers_link:
-                                  wx250s/ee_gripper_link:
-                                    {}
-                                  wx250s/left_finger_link:
-                                    {}
-                                  wx250s/right_finger_link:
-                                    {}
-                              wx250s/gripper_prop_link:
-                                {}
-          camera_color_frame:
-            {}
-          camera_depth_frame:
-            camera_depth_optical_frame:
+        wx250s/base_link:
+          camera1_link:
+            camera1_aligned_depth_to_color_frame:
+              camera1_color_optical_frame:
+                {}
+            camera1_color_frame:
               {}
+            camera1_depth_frame:
+              camera1_depth_optical_frame:
+                {}
+          wx250s/shoulder_link:
+            wx250s/upper_arm_link:
+              wx250s/upper_forearm_link:
+                wx250s/lower_forearm_link:
+                  wx250s/wrist_link:
+                    wx250s/gripper_link:
+                      wx250s/ee_arm_link:
+                        wx250s/ar_tag_link:
+                          {}
+                        wx250s/gripper_bar_link:
+                          wx250s/fingers_link:
+                            wx250s/ee_gripper_link:
+                              {}
+                            wx250s/left_finger_link:
+                              {}
+                            wx250s/right_finger_link:
+                              {}
+                        wx250s/gripper_prop_link:
+                          {}
       Update Interval: 0
       Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: RGB8
-      Decay Time: 0
-      Enabled: false
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: RawPointCloud
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.009999999776482582
-      Style: Points
-      Topic: /camera/depth/color/points
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: false
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: RGB8
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: FilteredPointCloud
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.009999999776482582
-      Style: Points
-      Topic: /pc_filter/pointcloud/filtered
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 10
-        Min Value: -10
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: RGB8
-      Decay Time: 0
-      Enabled: false
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: ObjectPointCloud
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.009999999776482582
-      Style: Points
-      Topic: /pc_filter/pointcloud/objects
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
-      Value: false
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /pc_filter/markers/crop_box
-      Name: CropBoxMarker
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: true
-    - Class: rviz/Marker
-      Enabled: true
-      Marker Topic: /pc_filter/markers/objects
-      Name: ObjectMarker
-      Namespaces:
-        {}
-      Queue Size: 100
-      Value: true
     - Class: rviz/Image
-      Enabled: true
+      Enabled: false
       Image Topic: /camera/color/image_raw
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: Image
+      Name: Top Camera Image
       Normalize Range: true
       Queue Size: 2
       Transport Hint: raw
       Unreliable: false
+      Value: false
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /camera1/color/image_raw
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Side Camera Image
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+      Unreliable: false
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /object_reg/rviz_debug
+      Name: Detected Objects
+      Namespaces:
+        Text: true
+        mesh: true
+      Queue Size: 100
       Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
@@ -359,7 +285,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /box_detector/debug
+      Topic: /filter_cloud/filtered
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -392,7 +318,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 0.7915977835655212
+      Distance: 0.8551857471466064
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -400,35 +326,39 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
+        X: 0.31964749097824097
+        Y: 0.157864511013031
+        Z: -0.03797153756022453
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7053980827331543
+      Pitch: 0.6447978019714355
       Target Frame: <Fixed Frame>
-      Yaw: 1.0553990602493286
+      Yaw: 2.4522783756256104
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1016
+  Height: 1511
   Hide Left Dock: false
   Hide Right Dock: false
-  Image:
+  Interbotix Control Panel:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd00000004000000000000016a0000035afc0200000009fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d00000242000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000a0049006d0061006700650100000285000001120000001600ffffff000000010000010f00000396fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000002800000396000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007380000003efc0100000002fb0000000800540069006d0065010000000000000738000003bc00fffffffb0000000800540069006d00650100000000000004500000000000000000000005c80000035a00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000400000000000001880000051ffc020000000bfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000008800fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c0061007900730100000055000003d30000012a00fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000c00430061006d0065007200610000000489000000db0000000000000000fb0000000c00430061006d0065007200610000000489000000db0000000000000000fb000000300049006e0074006500720062006f00740069007800200043006f006e00740072006f006c002000500061006e0065006c010000043100000143000001430000014300000001000001850000051ffc0200000004fc000000550000051f0000004501000029fa000000010100000002fb000000200054006f0070002000430061006d00650072006100200049006d00610067006501000008e10000010f0000010b00fffffffb000000220053006900640065002000430061006d00650072006100200049006d0061006700650100000000ffffffff0000011100fffffffb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000002800000396000000e800fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e1000001970000000300000a0000000047fc0100000002fb0000000800540069006d0065010000000000000a000000047400fffffffb0000000800540069006d00650100000000000004500000000000000000000006e10000051f00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
+    collapsed: false
+  Side Camera Image:
     collapsed: false
   Time:
     collapsed: false
   Tool Properties:
     collapsed: false
+  Top Camera Image:
+    collapsed: false
   Views:
     collapsed: false
-  Width: 1848
-  X: 72
-  Y: 27
+  Width: 2560
+  X: 0
+  Y: 52

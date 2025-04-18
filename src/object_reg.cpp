@@ -7,6 +7,7 @@
 #include <open3d/pipelines/registration/FastGlobalRegistration.h>
 #include <open3d/pipelines/registration/Feature.h>
 #include <open3d/pipelines/registration/Registration.h>
+#include <open3d/pipelines/registration/RobustKernel.h>
 #include <open3d/pipelines/registration/TransformationEstimation.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -32,10 +33,9 @@
 #include <optional>
 #include <vector>
 #include <map>
-#include "Eigen/src/Geometry/Transform.h"
 #include "ros/console.h"
 
-struct Track {
+struct Object {
     size_t id;
     bool active;
     Eigen::Isometry3d pose;
@@ -61,7 +61,7 @@ public:
         open3d::geometry::TriangleMesh cube_mesh;
         open3d::io::ReadTriangleMesh(cube_mesh_path_, cube_mesh, options);
 
-        cube_mesh_cloud_ = *cube_mesh.SamplePointsUniformly(1000, true);
+        cube_mesh_cloud_ = *cube_mesh.SamplePointsUniformly(500, true);
         cube_features_ = *open3d::pipelines::registration::ComputeFPFHFeature(cube_mesh_cloud_);
 
         ROS_INFO("Box detector node initialized.");
@@ -82,17 +82,13 @@ public:
 
         sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
         open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
-        open3d::geometry::PointCloud downsampled = *o3d_cloud.UniformDownSample(5);
-        open3d::geometry::PointCloud filtered_cloud = filter_blue_points_hsv(downsampled);
+        open3d::geometry::PointCloud filtered_cloud = filter_blue_points_hsv(o3d_cloud);
         sensor_msgs::PointCloud2 filtered_ros_cloud = convert_cloud_open3d_to_ros(
             filtered_cloud, transformed.header);
 
         auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 10);
-        auto cubes = detect_cubes(cluster_clouds);
-        ROS_DEBUG("Found %zu objects from %zu clusters.", cubes.size(), cluster_clouds.size());
-
-        update_tracks(cubes, cloud_msg->header.stamp);
-        draw_tracks();
+        update_objects(cluster_clouds, cloud_msg->header.stamp);
+        draw_objects();
 
         filtered_pub_.publish(filtered_ros_cloud);
 
@@ -100,8 +96,8 @@ public:
     }
 
 private:
-    void draw_tracks() {
-        for (const auto& track: tracks_) {
+    void draw_objects() {
+        for (const auto& track: objects_) {
             if (!track.active) {
                 continue;
             }
@@ -117,11 +113,11 @@ private:
         }
     }
 
-    vision_msgs::Detection3DArray convert_tracks_to_ros(std_msgs::Header header) {
+    vision_msgs::Detection3DArray convert_objects_to_ros(std_msgs::Header header) {
         vision_msgs::Detection3DArray detection_array;
         detection_array.header = header;
 
-        for (const auto& track: tracks_) {
+        for (const auto& track: objects_) {
             if (!track.active) {
                 continue;
             }
@@ -145,32 +141,85 @@ private:
         return detection_array;
     }
 
-    void update_tracks(const std::vector<Eigen::Isometry3d>& detections, ros::Time detection_time) {
-        size_t start_size = tracks_.size();
+    void update_objects(
+        std::vector<open3d::geometry::PointCloud>& clusters, ros::Time detection_time) {
+        using namespace open3d::pipelines::registration;
 
+        std::vector<Eigen::Isometry3d> object_poses;
+
+        for (auto& cluster: clusters) {
+            if (cluster.points_.size() < 100) continue;
+
+            // find most likely object correspondence
+            Eigen::Vector3d cluster_approx_position = cluster.GetCenter();
+            Eigen::Isometry3d closest_pose = Eigen::Isometry3d::Identity();
+            for (const auto& object: objects_) {
+                if (!object.active) {
+                    continue;
+                }
+
+                if ((object.pose.translation() - cluster_approx_position).norm()
+                    < (closest_pose.translation() - cluster_approx_position).norm()) {
+                    closest_pose = object.pose;
+                }
+            }
+
+            auto icp_result = RegistrationICP(cluster, cube_mesh_cloud_, 0.025,
+                closest_pose.inverse().matrix(), TransformationEstimationPointToPlane());
+
+            double fitness_cutoff = 0.7;
+
+            RegistrationResult result;
+            if (icp_result.fitness_ > fitness_cutoff) {
+                result = icp_result;
+            } else {
+                cluster.EstimateNormals();
+                auto cluster_features = *open3d::pipelines::registration::ComputeFPFHFeature(
+                    cluster);
+
+                RANSACConvergenceCriteria criteria(10000, 1.0);
+                auto ransac_result = RegistrationRANSACBasedOnFeatureMatching(cluster,
+                    cube_mesh_cloud_, cluster_features, cube_features_, false, 0.025,
+                    TransformationEstimationPointToPoint(), 4, {}, criteria);
+
+                result = RegistrationICP(cluster, cube_mesh_cloud_, 0.025,
+                    ransac_result.transformation_, TransformationEstimationPointToPlane());
+            }
+
+            if (result.fitness_ <= fitness_cutoff) {
+                continue;
+            }
+
+            Eigen::Isometry3d transform(result.transformation_);
+            Eigen::Isometry3d pose = transform.inverse();
+
+            object_poses.push_back(pose);
+        }
+
+        size_t start_size = objects_.size();
         std::vector<bool> claimed(start_size, false);
 
-        for (const auto& detection: detections) {
+        for (const auto& pose: object_poses) {
             bool correspondence_found = false;
 
             for (size_t i = 0; i < start_size; i++) {
-                Eigen::Vector3d delta = detection.translation() - tracks_[i].pose.translation();
+                Eigen::Vector3d delta = pose.translation() - objects_[i].pose.translation();
 
                 if (!claimed[i] && delta.norm() < 0.05) {
                     correspondence_found = true;
                     claimed[i] = true;
-                    tracks_[i].active = true;
-                    tracks_[i].last_detected = detection_time;
-                    tracks_[i].pose = detection;
+                    objects_[i].active = true;
+                    objects_[i].last_detected = detection_time;
+                    objects_[i].pose = pose;
                     break;
                 }
             }
 
             if (!correspondence_found) {
-                tracks_.push_back({
+                objects_.push_back({
                     next_id++,
                     true,
-                    detection,
+                    pose,
                     detection_time,
                 });
             }
@@ -178,58 +227,21 @@ private:
 
         for (size_t i = 0; i < start_size; i++) {
             if (!claimed[i]) {
-                tracks_[i].active = false;
+                objects_[i].active = false;
             }
         }
 
-        std::vector<Track> recent_tracks;
-        recent_tracks.reserve(tracks_.size());
-        for (const auto& track: tracks_) {
+        std::vector<Object> recent_objects;
+        recent_objects.reserve(objects_.size());
+        for (const auto& track: objects_) {
             if (!track.active && track.last_detected - detection_time > ros::Duration(30)) {
                 continue;
             }
 
-            recent_tracks.push_back(track);
+            recent_objects.push_back(track);
         }
 
-        tracks_ = std::move(recent_tracks);
-    }
-
-    std::vector<Eigen::Isometry3d> detect_cubes(
-        std::vector<open3d::geometry::PointCloud>& clusters) {
-        std::vector<Eigen::Isometry3d> cubes;
-        for (auto& cluster: clusters) {
-            if (cluster.points_.size() < 100) continue;
-
-            cluster.EstimateNormals();
-            auto cluster_features = *open3d::pipelines::registration::ComputeFPFHFeature(cluster);
-
-            try {
-                open3d::pipelines::registration::RANSACConvergenceCriteria criteria(1000, 0.99);
-                auto result =
-                    open3d::pipelines::registration::RegistrationRANSACBasedOnFeatureMatching(
-                        cluster, cube_mesh_cloud_, cluster_features, cube_features_, false, 0.025,
-                        open3d::pipelines::registration::TransformationEstimationPointToPoint(), 3,
-                        {}, criteria);
-
-                auto local_result = open3d::pipelines::registration::RegistrationICP(cluster,
-                    cube_mesh_cloud_, 0.01, result.transformation_,
-                    open3d::pipelines::registration::TransformationEstimationPointToPlane());
-
-                if (local_result.inlier_rmse_ > 0.005) {
-                    continue;
-                }
-
-                Eigen::Isometry3d transform(local_result.transformation_);
-                Eigen::Isometry3d pose = transform.inverse();
-
-                cubes.push_back(pose);
-            } catch (...) {
-                ROS_WARN("Failed to align scans!");
-            }
-        }
-
-        return cubes;
+        objects_ = std::move(recent_objects);
     }
 
     std::vector<open3d::geometry::PointCloud> cluster_cloud(
@@ -518,7 +530,7 @@ private:
     ros::Publisher detection_pub_;
 
     size_t next_id = 0;
-    std::vector<Track> tracks_;
+    std::vector<Object> objects_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -532,7 +544,7 @@ private:
 };
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "box_detector_node");
+    ros::init(argc, argv, "object_registration_node");
     ObjectRegistration loader;
     ros::spin();
     return 0;

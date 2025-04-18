@@ -1,9 +1,26 @@
 <launch>
   <arg name="use_sim" default="true" />
   
+    <node name="filter_cloud_node" pkg="robot_manipulation" type="filter_cloud" output="screen">
+    <remap from="/point_cloud" to="/camera1/depth/color/points" />
+    <remap from="/filtered_point_cloud" to="/filter_cloud/filtered" />
+    <!-- Parameters for cropping -->
+    <param name="crop_min_x" type="double" value="0.0" />
+    <param name="crop_min_y" type="double" value="-0.2" />
+    <param name="crop_min_z" type="double" value="0.0" />
+    <param name="crop_max_x" type="double" value="0.6" />
+    <param name="crop_max_y" type="double" value="0.2" />
+    <param name="crop_max_z" type="double" value="0.15" />
+    <!-- Parameter for downsampling -->
+    <param name="voxel_size" type="double" value="0.003" />
+    <!-- Parameter for target frame -->
+    <param name="base_link_frame" type="str" value="wx250s/base_link" />
+  </node>
+
   <node name="object_reg_node" pkg="robot_manipulation" type="object_reg" output="screen">
     <param name="cube_mesh_path" type="str" value="$(find robot_manipulation)/resources/cube.stl" />
-    <remap from="/point_cloud" to="/camera/depth/color/points" />
+
+    <remap from="/point_cloud" to="/filter_cloud/filtered" />
     <remap from="/rviz_debug" to="/object_reg/rviz_debug" />
     <remap from="/filtered_point_cloud" to="/object_reg/filtered" />
     <remap from="/detections" to="/object_reg/detections" />
@@ -13,14 +30,6 @@
   <include file="$(find robot_manipulation)/launch/base.launch">
     <arg name="use_rviz" value="true" />
     <arg name="use_sim" value="$(arg use_sim)" />
-    <!-- Unfortunately I can't get it to load custom transforms, so I'm going to publish them manually. That file is not necessary anymore. -->
-    <!-- <arg name="transform_filepath" value="$(find robot_manipulation)/config/static_transforms.yaml" /> -->
+    <arg name="dual_camera" value="true" />
   </include>
-
-  <!-- 
-    To get this number, run the calibration thing they have
-    (roslaunch interbotix_xsarm_perception xsarm_perception.launch robot_model:=wx250s use_pointcloud_tuner_gui:=true use_armtag_tuner_gui:=true)
-    However if you try to input the XYZ rotation it gives I think the order is wrong. So use tf_echo to get the transform as a proper quaternion.
-  -->
-  <node pkg="tf2_ros" type="static_transform_publisher" name="camera_base_link_broadcaster" args="0.041 -0.269 0.684 0.691 0.722 -0.029 0.001 camera_color_optical_frame wx250s/base_link" />
 </launch>

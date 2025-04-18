@@ -23,7 +23,7 @@
 #include <vector>
 #include <map>
 
-struct Track {
+struct Object {
     size_t id;
     bool active;
     open3d::geometry::OrientedBoundingBox bbox;
@@ -169,7 +169,7 @@ private:
             }
         }
 
-        std::vector<Track> recent_tracks;
+        std::vector<Object> recent_tracks;
         recent_tracks.reserve(tracks_.size());
         for (const auto& track: tracks_) {
             if (!track.active && track.last_detected - detection_time > ros::Duration(30)) {
@@ -523,7 +523,7 @@ private:
     ros::Publisher detection_pub_;
 
     size_t next_id = 0;
-    std::vector<Track> tracks_;
+    std::vector<Object> tracks_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;

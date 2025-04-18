@@ -141,6 +141,7 @@ include_directories(
 ## The recommended prefix ensures that target names across packages don't collide
 add_executable(box_detector src/box_detector.cpp)
 add_executable(object_reg src/object_reg.cpp)
+add_executable(filter_cloud src/filter_cloud.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -160,6 +161,11 @@ target_link_libraries(box_detector
 )
 
 target_link_libraries(object_reg
+  ${catkin_LIBRARIES}
+  ${Open3D_LIBRARIES}
+)
+
+target_link_libraries(filter_cloud
   ${catkin_LIBRARIES}
   ${Open3D_LIBRARIES}
 )
