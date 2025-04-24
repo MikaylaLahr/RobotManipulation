@@ -23,6 +23,7 @@
 #include <tf2_eigen/tf2_eigen.h>
 
 #include <open3d/Open3D.h>
+#include <boost/filesystem/operations.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -31,17 +32,24 @@
 #include <cstddef>
 #include <string>
 #include <optional>
+#include <unordered_map>
 #include <vector>
-#include <map>
-#include "ros/console.h"
+#include <boost/filesystem.hpp>
 
 enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper };
+
+struct ObjectTypeInfo {
+    std::string mesh_path;
+    open3d::geometry::PointCloud point_cloud;
+    open3d::pipelines::registration::Feature features;
+};
 
 struct Object {
     size_t id;
     bool active;
     Eigen::Isometry3d pose;
     ros::Time last_detected;
+    ObjectType type;
 };
 
 class ObjectRegistration {
@@ -54,20 +62,11 @@ public:
         visual_tools_.reset(
             new rviz_visual_tools::RvizVisualTools(base_link_frame_, "/rviz_debug", nh_));
 
-        nh_.getParam("cube_mesh_path", cube_mesh_path_);
-
-        open3d::io::ReadTriangleMeshOptions options;
-        options.enable_post_processing = false;
-        options.print_progress = false;
-
-        open3d::geometry::TriangleMesh cube_mesh;
-        open3d::io::ReadTriangleMesh(cube_mesh_path_, cube_mesh, options);
-
-        cube_mesh_cloud_ = *cube_mesh.SamplePointsUniformly(500, true);
-        cube_features_ = *open3d::pipelines::registration::ComputeFPFHFeature(cube_mesh_cloud_);
+        read_meshes();
 
         ROS_INFO("Box detector node initialized.");
         ROS_INFO("Using frame %s as base link.", base_link_frame_.c_str());
+        ROS_INFO("Found %zu object meshes.", object_types_.size());
     }
 
     // Callback function for processing incoming PointCloud2 messages
@@ -84,28 +83,63 @@ public:
 
         sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
         open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
-        open3d::geometry::PointCloud filtered_cloud = filter_blue_points_hsv(o3d_cloud);
-        sensor_msgs::PointCloud2 filtered_ros_cloud = convert_cloud_open3d_to_ros(
-            filtered_cloud, transformed.header);
 
-        auto cluster_clouds = cluster_cloud(filtered_cloud, 0.02, 10);
+        auto cluster_clouds = cluster_cloud(o3d_cloud, 0.02, 10);
         update_objects(cluster_clouds, cloud_msg->header.stamp);
+
         draw_objects();
 
-        filtered_pub_.publish(filtered_ros_cloud);
-
+        // TODO: use clusters to publish filtered cloud
         visual_tools_->trigger();
     }
 
 private:
+    void read_meshes() {
+        std::string mesh_folder;
+        nh_.getParam("mesh_folder", mesh_folder);
+
+        std::unordered_map<std::string, ObjectType> name_type_map{
+            {"cube", ObjectType::Cube},
+            {"milk", ObjectType::Milk},
+            {"wine", ObjectType::Wine},
+            {"eggs", ObjectType::Eggs},
+            {"toilet_paper", ObjectType::ToiletPaper},
+        };
+
+        open3d::io::ReadTriangleMeshOptions options;
+        options.enable_post_processing = false;
+        options.print_progress = false;
+
+        for(const auto& entry : boost::make_iterator_range(boost::filesystem::directory_iterator(mesh_folder), {})) {
+            open3d::geometry::TriangleMesh mesh;
+            open3d::io::ReadTriangleMesh(entry.path().string(), mesh, options);
+
+            auto point_cloud = *mesh.SamplePointsUniformly(500, true);
+            auto features = *open3d::pipelines::registration::ComputeFPFHFeature(point_cloud);
+
+            ObjectTypeInfo data{
+                entry.path().string(),
+                point_cloud,
+                features
+            };
+
+            std::string filename = entry.path().filename().replace_extension("").string();
+            ObjectType type = name_type_map[filename];
+
+            object_types_[type] = data;
+        }
+    }
+
     void draw_objects() {
         for (const auto& track: objects_) {
             if (!track.active) {
                 continue;
             }
 
+            ObjectTypeInfo info = object_types_[track.type];
+
             Eigen::Isometry3d pose = track.pose;
-            visual_tools_->publishMesh(pose, std::string("file://") + cube_mesh_path_,
+            visual_tools_->publishMesh(pose, std::string("file://") + info.mesh_path,
                 rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id);
 
             Eigen::Isometry3d text_pose = pose;
@@ -153,17 +187,31 @@ private:
             if (cluster.points_.size() < 100) continue;
 
             // find most likely object correspondence
+            // TODO: incorporate color?
             Eigen::Vector3d cluster_approx_position = cluster.GetCenter();
-            Eigen::Isometry3d closest_pose = Eigen::Isometry3d::Identity();
-            for (const auto& object: objects_) {
+            std::optional<size_t> closest_object_index;
+            for (size_t i = 0; i < objects_.size(); i++) {
+                const auto& object = objects_[i];
                 if (!object.active) {
                     continue;
                 }
 
-                if ((object.pose.translation() - cluster_approx_position).norm()
-                    < (closest_pose.translation() - cluster_approx_position).norm()) {
-                    closest_pose = object.pose;
+                if (!closest_object_index) {
+                    closest_object_index = i;
+                    continue;
                 }
+
+                if ((object.pose.translation() - cluster_approx_position).norm()
+                    < (objects_[*closest_object_index].pose.translation() - cluster_approx_position).norm()) {
+                    closest_object_index = i;
+                }
+            }
+
+            // if there is at least one object to compare to
+            if (closest_object_index) {
+
+            } else{
+
             }
 
             auto icp_result = RegistrationICP(cluster, cube_mesh_cloud_, 0.025,
@@ -282,82 +330,6 @@ private:
         }
 
         return cluster_clouds;
-    }
-
-    open3d::geometry::PointCloud filter_blue_points_hsv(
-        const open3d::geometry::PointCloud& input_cloud) {
-        open3d::geometry::PointCloud filtered_cloud;
-
-        if (!input_cloud.HasColors() || input_cloud.points_.empty()) {
-            ROS_WARN("Input cloud for filtering has no colors or points. Returning empty cloud.");
-            return filtered_cloud;  // Return empty if no colors or points
-        }
-
-        filtered_cloud.points_.reserve(input_cloud.points_.size());  // Reserve capacity
-        filtered_cloud.colors_.reserve(input_cloud.colors_.size());
-
-        const double h_low = (100.0 / 179.0) * 360.0;
-        const double h_high = (140.0 / 179.0) * 360.0;
-        const double s_low = 150.0 / 255.0;
-        const double s_high = 1.0;
-        const double v_low = 20.0 / 255.0;
-        const double v_high = 1.0;
-
-        for (size_t i = 0; i < input_cloud.points_.size(); ++i) {
-            const Eigen::Vector3d& rgb = input_cloud.colors_[i];
-
-            // Convert RGB [0,1] to HSV [0-360, 0-1, 0-1]
-            auto [h, s, v] = rgb_to_hsv(rgb.x(), rgb.y(), rgb.z());
-
-            // Check if the point falls within either red range
-            bool in_range = (h >= h_low && h <= h_high && s >= s_low && s <= s_high && v >= v_low
-                             && v <= v_high);
-
-            if (in_range) {
-                // Keep the point if it's in either range
-                filtered_cloud.points_.push_back(input_cloud.points_[i]);
-                filtered_cloud.colors_.push_back(
-                    input_cloud.colors_[i]);  // Keep original RGB color
-            }
-        }
-
-        return filtered_cloud;
-    }
-
-    std::tuple<double, double, double> rgb_to_hsv(double r, double g, double b) {
-        double h = 0.0, s = 0.0, v = 0.0;
-        double max_val = std::max({r, g, b});
-        double min_val = std::min({r, g, b});
-        double delta = max_val - min_val;
-
-        v = max_val;  // Value is the maximum of r, g, b
-
-        if (max_val > 1e-6) {     // Avoid division by zero or very small numbers
-            s = delta / max_val;  // Saturation
-        } else {
-            // r = g = b = 0 (or very close)
-            s = 0.0;
-            h = 0.0;  // Undefined hue, often set to 0
-            return {h, s, v};
-        }
-
-        if (delta > 1e-6) {  // If color is not grayscale
-            if (max_val == r) {
-                h = 60.0 * std::fmod(((g - b) / delta), 6.0);
-            } else if (max_val == g) {
-                h = 60.0 * (((b - r) / delta) + 2.0);
-            } else {  // max_val == b
-                h = 60.0 * (((r - g) / delta) + 4.0);
-            }
-        } else {
-            h = 0.0;  // Hue is undefined for grayscale, set to 0
-        }
-
-        if (h < 0.0) {
-            h += 360.0;  // Ensure hue is in [0, 360)
-        }
-
-        return {h, s, v};
     }
 
     open3d::geometry::PointCloud convert_cloud_ros_to_open3d(
@@ -540,9 +512,7 @@ private:
 
     rviz_visual_tools::RvizVisualToolsPtr visual_tools_;
 
-    std::string cube_mesh_path_;
-    open3d::geometry::PointCloud cube_mesh_cloud_;
-    open3d::pipelines::registration::Feature cube_features_;
+    std::unordered_map<ObjectType, ObjectTypeInfo> object_types_;
 };
 
 int main(int argc, char** argv) {

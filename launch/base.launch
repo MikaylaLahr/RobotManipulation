@@ -47,7 +47,6 @@
     <arg name="depth_fps"                         value="$(arg depth_fps)"/>
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
-    <arg name="align_depth"                       value="true" />
     <arg name="serial_no"                         value="834412070801" />
   </include>
   
@@ -60,7 +59,6 @@
     <arg name="depth_fps"                         value="$(arg depth_fps)"/>
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
-    <arg name="align_depth"                       value="true" />
     <arg name="serial_no"                         value="215222076164" />
   </include>
 
