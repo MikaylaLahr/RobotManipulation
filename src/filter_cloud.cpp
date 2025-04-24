@@ -21,6 +21,9 @@
 #include <vision_msgs/BoundingBox3D.h>
 #include <rviz_visual_tools/rviz_visual_tools.h>
 #include <tf2_eigen/tf2_eigen.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
 
 #include <open3d/Open3D.h>
 #include <opencv2/core/types.hpp>
@@ -32,19 +35,16 @@
 #include <string>
 #include <optional>
 #include <vector>
-#include "ros/console.h"
-
-struct Object {
-    size_t id;
-    bool active;
-    Eigen::Isometry3d pose;
-    ros::Time last_detected;
-};
+#include "message_filters/synchronizer.h"
 
 class ObjectRegistration {
 public:
-    ObjectRegistration(): nh_("~"), tf_listener_(tf_buffer_) {
-        // Read parameters
+    ObjectRegistration()
+        : nh_("~"),
+          tf_listener_(tf_buffer_),
+          sub1_(nh_, "/point_cloud_1", 1),
+          sub2_(nh_, "/point_cloud_2", 1),
+          sync_(SyncPolicy(10), sub1_, sub2_) {
         nh_.param<double>("crop_min_x", crop_min_x_, 0.0);
         nh_.param<double>("crop_min_y", crop_min_y_, -0.2);
         nh_.param<double>("crop_min_z", crop_min_z_, 0.0);
@@ -54,7 +54,8 @@ public:
         nh_.param<double>("voxel_size", voxel_size_, 0.005);
         nh_.param<std::string>("base_link_frame", base_link_frame_, "wx250s/base_link");
 
-        sub_ = nh_.subscribe("/point_cloud", 1, &ObjectRegistration::point_cloud_callback, this);
+        sync_.registerCallback(
+            boost::bind(&ObjectRegistration::point_cloud_callback, this, _1, _2));
         filtered_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/filtered_point_cloud", 1);
 
         ROS_INFO("Cloud filter node initialized.");
@@ -65,17 +66,30 @@ public:
     }
 
     // Callback function for processing incoming PointCloud2 messages
-    void point_cloud_callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg) {
-        ROS_DEBUG("Received PointCloud2 message (%dx%d points) in frame '%s'.", cloud_msg->width,
-            cloud_msg->height, cloud_msg->header.frame_id.c_str());
+    void point_cloud_callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg_1,
+        const sensor_msgs::PointCloud2ConstPtr& cloud_msg_2) {
+        ROS_DEBUG("Received PointCloud2 message (%dx%d points) in frame '%s'.", cloud_msg_1->width,
+            cloud_msg_1->height, cloud_msg_1->header.frame_id.c_str());
+        ROS_DEBUG("Received PointCloud2 message (%dx%d points) in frame '%s'.", cloud_msg_2->width,
+            cloud_msg_2->height, cloud_msg_2->header.frame_id.c_str());
 
-        auto transformed_opt = transform_point_cloud(*cloud_msg, base_link_frame_);
-        if (!transformed_opt) {
+        auto transformed_opt_1 = transform_point_cloud(*cloud_msg_1, base_link_frame_);
+        if (!transformed_opt_1) {
+            return;
+        }
+        auto transformed_opt_2 = transform_point_cloud(*cloud_msg_2, base_link_frame_);
+        if (!transformed_opt_2) {
             return;
         }
 
-        sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
-        open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
+        sensor_msgs::PointCloud2 transformed_1 = std::move(*transformed_opt_1);
+        sensor_msgs::PointCloud2 transformed_2 = std::move(*transformed_opt_2);
+
+        open3d::geometry::PointCloud o3d_cloud_1 = convert_cloud_ros_to_open3d(transformed_1);
+        open3d::geometry::PointCloud o3d_cloud_2 = convert_cloud_ros_to_open3d(transformed_2);
+
+        open3d::geometry::PointCloud o3d_cloud = o3d_cloud_1 + o3d_cloud_2;
+
         open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(
             open3d::geometry::AxisAlignedBoundingBox(
                 Eigen::Vector3d(crop_min_x_, crop_min_y_, crop_min_z_),
@@ -85,7 +99,7 @@ public:
 
         // Publish the downsampled (and cropped) cloud
         sensor_msgs::PointCloud2 filtered_msg = convert_cloud_open3d_to_ros(
-            downsampled, transformed.header);
+            downsampled, transformed_1.header);
         filtered_pub_.publish(filtered_msg);
     }
 
@@ -257,7 +271,11 @@ private:
     }
 
     ros::NodeHandle nh_;
-    ros::Subscriber sub_;
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2,
+        sensor_msgs::PointCloud2>;
+    message_filters::Subscriber<sensor_msgs::PointCloud2> sub1_;
+    message_filters::Subscriber<sensor_msgs::PointCloud2> sub2_;
+    message_filters::Synchronizer<SyncPolicy> sync_;
     ros::Publisher filtered_pub_;
 
     tf2_ros::Buffer tf_buffer_;

@@ -35,6 +35,8 @@
 #include <map>
 #include "ros/console.h"
 
+enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper };
+
 struct Object {
     size_t id;
     bool active;
@@ -45,7 +47,7 @@ struct Object {
 class ObjectRegistration {
 public:
     ObjectRegistration(): nh_("~"), tf_listener_(tf_buffer_) {
-        sub_ = nh_.subscribe("/point_cloud", 1, &ObjectRegistration::point_cloud_callback, this);
+        sub1_ = nh_.subscribe("/point_cloud", 1, &ObjectRegistration::point_cloud_callback, this);
         filtered_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/filtered_point_cloud", 1);
         detection_pub_ = nh_.advertise<vision_msgs::Detection3DArray>("/detections", 1);
 
@@ -525,7 +527,7 @@ private:
     }
 
     ros::NodeHandle nh_;
-    ros::Subscriber sub_;
+    ros::Subscriber sub1_;
     ros::Publisher filtered_pub_;
     ros::Publisher detection_pub_;
 

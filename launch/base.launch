@@ -38,7 +38,7 @@
     <arg name="use_sim"                           value="$(arg use_sim)" />
   </include>
 
-  <!-- <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera"                            value="$(arg cam1_name)" />
     <arg name="filters"                           value="$(arg filters)"/>
     <arg name="color_fps"                         value="$(arg color_fps)"/>
@@ -48,8 +48,8 @@
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
     <arg name="align_depth"                       value="true" />
-    <arg name="serial_no"                         value="215222076164" />
-  </include> -->
+    <arg name="serial_no"                         value="834412070801" />
+  </include>
   
   <include file="$(find realsense2_camera)/launch/rs_camera.launch" if="$(arg dual_camera)">
     <arg name="camera"                            value="$(arg cam2_name)" />
@@ -61,13 +61,11 @@
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
     <arg name="align_depth"                       value="true" />
-    <!-- <arg name="serial_no"                         value="834412070693" /> -->
     <arg name="serial_no"                         value="215222076164" />
-    <arg name="initial_reset"                      value="true" />
   </include>
 
-  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.266 0.014 0.698 0.722 -0.013 -0.692 0.022 wx250s/base_link $(arg cam1_name)_link" /> -->
-  <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.164 0.471 0.459 0.272 0.183 -0.690 0.645 wx250s/base_link $(arg cam2_name)_link" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.274 0.001 0.677 0.735 0.022 -0.677 0.018 wx250s/base_link $(arg cam1_name)_link" />
+  <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.227 0.466 0.480 0.268 0.227 -0.695 0.628 wx250s/base_link $(arg cam2_name)_link" launch-prefix="bash -c 'sleep 5; $0 $@'" />
 
   <node if="$(arg use_rviz)"
     name="rviz"
