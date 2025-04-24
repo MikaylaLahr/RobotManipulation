@@ -69,6 +69,8 @@ def main():
     #   Initialize the arm module along with the pointcloud and armtag modules
     bot = InterbotixManipulatorXS("wx250s", moving_time=1.5, accel_time=0.75)
 
+
+
     buffer = tf2_ros.Buffer()
     tf_listener = tf2_ros.TransformListener(buffer)
 
@@ -98,7 +100,8 @@ def main():
         hi_mask = np.array([180, 255,255])
         mask2 = cv2.inRange(hsv_img, low_mask, hi_mask)
         red_mask = mask1+mask2
-
+        
+        
         red_area = np.count_nonzero(red_mask)
 
         if (start_area != 1):
@@ -108,12 +111,12 @@ def main():
             #print("Red Area")
             #print(start_red_area)
             #print("##############################################")
-
-        percent_fill = (red_area/start_red_area)*100
+        if (start_red_area != 0):
+            percent_fill = (red_area/start_red_area)*100
 
         #print("##############################################")
         print("Percent Fill")
-        print(percent_fill)
+        #print(percent_fill)
         #print("##############################################")
 
         '''
@@ -237,9 +240,10 @@ def main():
         '''
 
         # Initialize a list to store the areas of each blue contour
+        '''
         blue_areas = []
         blue_contours_with_area = []
-        '''
+
         # Loop through each contour in contours_blue
         for contour in contours_blue:
             # Calculate the area of the contour
@@ -250,7 +254,7 @@ def main():
 
         #blue_areas.sort(key=lambda x: x[1], reverse=True)
 
-        for contour, area in contours_blue: #blue_contours_with_area:               
+        for contour in contours_blue: #blue_contours_with_area:               
             if cv2.contourArea(contour) < 500:
                 continue
             
@@ -292,19 +296,50 @@ def main():
         
             transformed_point = do_transform_point(point, transform)
 
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x, y=transformed_point.point.y, z=transformed_point.point.z + 0.2, pitch=0.5)
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x, y=transformed_point.point.y, z=transformed_point.point.z, pitch=0.5)
+            #0.025 added to each x due to transform being off when having wrist directly facing down
+            bot.arm.set_ee_pose_components(x=transformed_point.point.x + .025, y=transformed_point.point.y, z=transformed_point.point.z + 0.2, pitch=1.57)
+            bot.arm.set_ee_pose_components(x=transformed_point.point.x + .025, y=transformed_point.point.y, z=transformed_point.point.z, pitch=1.57)
             bot.gripper.close()
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x, y=transformed_point.point.y, z=transformed_point.point.z + 0.2, pitch=0.5)
-            bot.arm.set_ee_pose_components(x=transformed_point_red.point.x, y=transformed_point_red.point.y, z=transformed_point_red.point.z + 0.1, pitch=0.5)
+            bot.arm.set_ee_pose_components(x=transformed_point.point.x + .025, y=transformed_point.point.y, z=transformed_point.point.z + 0.2, pitch=1.57)
+            #set wrist to point directly down above box
+            bot.arm.set_ee_pose_components(
+                x=transformed_point_red.point.x + .025,
+                y=transformed_point_red.point.y,
+                z=transformed_point_red.point.z + 0.2,  # Slightly above the box
+                roll=0.0,
+                pitch=1.57,  # Set pitch to -90 degrees (downward)
+                yaw=0.0
+            )
+            #set object down into box
+            bot.arm.set_ee_pose_components(
+                x=transformed_point_red.point.x + .025,
+                y=transformed_point_red.point.y,
+                z=transformed_point_red.point.z,  # almost all the way down
+                roll=0.0,
+                pitch=1.57,  # Set pitch to -90 degrees (downward)
+                yaw=0.0
+            )
             bot.gripper.open()
+            #lift out of box
+            bot.arm.set_ee_pose_components(
+                x=transformed_point_red.point.x + .025,
+                y=transformed_point_red.point.y,
+                z=transformed_point_red.point.z + 0.2,  # Slightly above the box
+                roll=0.0,
+                pitch=1.57,  # Set pitch to -90 degrees (downward)
+                yaw=0.0
+            )
+
+
+            #bot.arm.set_ee_pose_components(x=transformed_point_red.point.x, y=transformed_point_red.point.y, z=transformed_point_red.point.z + 0.1, pitch=0.5)
+
             
             pub.publish(point)
 
 
 
 
-        #bot.arm.go_to_sleep_pose()
+        bot.arm.go_to_sleep_pose()
 
 
     cv2.destroyAllWindows()

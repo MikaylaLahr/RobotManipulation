@@ -64,8 +64,8 @@
     <arg name="serial_no"                         value="215222076164" />
   </include>
 
-  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.274 0.001 0.677 0.735 0.022 -0.677 0.018 wx250s/base_link $(arg cam1_name)_link" />
-  <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.227 0.466 0.480 0.268 0.227 -0.695 0.628 wx250s/base_link $(arg cam2_name)_link" launch-prefix="bash -c 'sleep 5; $0 $@'" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.288 0.025 0.691 0.716 0.003 -0.697 0.033 wx250s/base_link $(arg cam1_name)_link" />
+  <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.237 0.484 0.449 0.249 0.177 -0.723 0.620 wx250s/base_link $(arg cam2_name)_link" launch-prefix="bash -c 'sleep 5; $0 $@'" />
 
   <node if="$(arg use_rviz)"
     name="rviz"
