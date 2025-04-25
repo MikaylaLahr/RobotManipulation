@@ -128,7 +128,7 @@ private:
             ObjectTypeInfo data{entry.path().string(), point_cloud, features};
 
             std::string filename = entry.path().filename().replace_extension("").string();
-            if(name_type_map.find(filename) != name_type_map.end()) {
+            if (name_type_map.find(filename) != name_type_map.end()) {
                 ObjectType type = name_type_map[filename];
                 object_types_[type] = data;
             }
@@ -191,8 +191,7 @@ private:
         std::vector<size_t> valid_clusters;
         valid_clusters.reserve(clusters.size());
         for (size_t i = 0; i < clusters.size(); i++) {
-            if (clusters[i].points_.size() < 500)
-                continue;
+            if (clusters[i].points_.size() < 500) continue;
             valid_clusters.push_back(i);
         }
         ROS_INFO("%zu valid clusters", valid_clusters.size());
@@ -200,8 +199,7 @@ private:
         std::vector<size_t> active_objects;
         active_objects.reserve(objects_.size());
         for (size_t i = 0; i < objects_.size(); i++) {
-            if (!objects_[i].active)
-                continue;
+            if (!objects_[i].active) continue;
             active_objects.push_back(i);
         }
         ROS_INFO("%zu active objects", active_objects.size());
@@ -209,22 +207,24 @@ private:
         std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         std::vector<int> object_matches = gale_shapley<size_t, size_t>(
             active_objects, valid_clusters, [&](auto object_idx, auto cluster_idx) {
-                return (clusters[cluster_idx].GetCenter() - objects_[object_idx].pose.translation()).squaredNorm();
+                return (clusters[cluster_idx].GetCenter() - objects_[object_idx].pose.translation())
+                    .squaredNorm();
             });
         std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        ROS_INFO("GS: %ldms", std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+        ROS_INFO("GS: %ldms",
+            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
         std::vector<bool> matched_clusters(valid_clusters.size(), false);
         double fitness_threshold = 0.7;
 
         begin = std::chrono::steady_clock::now();
         for (size_t i = 0; i < object_matches.size(); i++) {
-            auto &object = objects_[active_objects[i]];
+            auto& object = objects_[active_objects[i]];
 
             ROS_INFO("%d", object_matches[i]);
 
             if (object_matches[i] != -1) {
-                auto &cluster = clusters[valid_clusters[object_matches[i]]];
+                auto& cluster = clusters[valid_clusters[object_matches[i]]];
 
                 auto icp_result = RegistrationICP(cluster, object_types_[object.type].point_cloud,
                     0.025, object.pose.inverse().matrix(), TransformationEstimationPointToPlane());
@@ -237,18 +237,20 @@ private:
                     object.last_detected = detection_time;
                     object.pose = pose;
                     matched_clusters[object_matches[i]] = true;
+                } else {  // treat cluster as new object
+                    object.active = false;
                 }
-            } else {  // there is no nearby cluster
+            } else {  // there is no nearby cluster, treat cluster as new object
                 object.active = false;
             }
         }
         end = std::chrono::steady_clock::now();
-        ROS_INFO("Object matching: %ldms", std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+        ROS_INFO("Object matching: %ldms",
+            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
         begin = std::chrono::steady_clock::now();
         for (size_t i = 0; i < matched_clusters.size(); i++) {
-            if (matched_clusters[i])
-                continue;
+            if (matched_clusters[i]) continue;
 
             auto [type, pose, fitness] = detect_new_object(clusters[valid_clusters[i]]);
 
@@ -257,7 +259,8 @@ private:
             }
         }
         end = std::chrono::steady_clock::now();
-        ROS_INFO("New object detection: %ldms", std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+        ROS_INFO("New object detection: %ldms",
+            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
         ROS_INFO("%zu objects", objects_.size());
 
