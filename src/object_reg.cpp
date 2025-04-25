@@ -24,6 +24,7 @@
 
 #include <open3d/Open3D.h>
 #include <boost/filesystem/operations.hpp>
+#include <chrono>
 #include <limits>
 #include <opencv2/core/types.hpp>
 #include <opencv2/imgproc.hpp>
@@ -37,8 +38,10 @@
 #include <vector>
 #include <boost/filesystem.hpp>
 
+#include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Geometry/Transform.h"
 #include "gs_matching.h"
+#include "ros/console.h"
 
 enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper };
 
@@ -49,7 +52,7 @@ struct ObjectTypeInfo {
 };
 
 struct Object {
-    size_t id;
+    int id;
     bool active;
     Eigen::Isometry3d pose;
     ros::Time last_detected;
@@ -125,9 +128,10 @@ private:
             ObjectTypeInfo data{entry.path().string(), point_cloud, features};
 
             std::string filename = entry.path().filename().replace_extension("").string();
-            ObjectType type = name_type_map[filename];
-
-            object_types_[type] = data;
+            if(name_type_map.find(filename) != name_type_map.end()) {
+                ObjectType type = name_type_map[filename];
+                object_types_[type] = data;
+            }
         }
     }
 
@@ -182,29 +186,45 @@ private:
         std::vector<open3d::geometry::PointCloud> clusters, ros::Time detection_time) {
         using namespace open3d::pipelines::registration;
 
-        std::vector<open3d::geometry::PointCloud> valid_clusters;
+        ROS_INFO("%zu clusters", clusters.size());
+
+        std::vector<size_t> valid_clusters;
         valid_clusters.reserve(clusters.size());
         for (size_t i = 0; i < clusters.size(); i++) {
-            if (clusters[i].points_.size() < 100) continue;
-            valid_clusters.push_back(std::move(clusters[i]));
+            if (clusters[i].points_.size() < 500)
+                continue;
+            valid_clusters.push_back(i);
         }
+        ROS_INFO("%zu valid clusters", valid_clusters.size());
 
-        std::vector<int> cluster_matches = gale_shapley<open3d::geometry::PointCloud, Object>(
-            valid_clusters, objects_, [](const auto& cluster, const auto& object) {
-                return (cluster.GetCenter() - object.pose.translation()).squaredNorm();
+        std::vector<size_t> active_objects;
+        active_objects.reserve(objects_.size());
+        for (size_t i = 0; i < objects_.size(); i++) {
+            if (!objects_[i].active)
+                continue;
+            active_objects.push_back(i);
+        }
+        ROS_INFO("%zu active objects", active_objects.size());
+
+        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+        std::vector<int> object_matches = gale_shapley<size_t, size_t>(
+            active_objects, valid_clusters, [&](auto object_idx, auto cluster_idx) {
+                return (clusters[cluster_idx].GetCenter() - objects_[object_idx].pose.translation()).squaredNorm();
             });
+        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+        ROS_INFO("GS: %ldms", std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
+        std::vector<bool> matched_clusters(valid_clusters.size(), false);
         double fitness_threshold = 0.7;
 
-        std::vector<bool> detected_objects(objects_.size(), false);
+        begin = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < object_matches.size(); i++) {
+            auto &object = objects_[active_objects[i]];
 
-        for (size_t i = 0; i < cluster_matches.size(); i++) {
-            auto& cluster = valid_clusters[i];
+            ROS_INFO("%d", object_matches[i]);
 
-            // TODO: check distance in case we get a really wrong match?
-            // there is a nearby object
-            if (cluster_matches[i] != -1) {
-                auto& object = objects_[cluster_matches[i]];
+            if (object_matches[i] != -1) {
+                auto &cluster = clusters[valid_clusters[object_matches[i]]];
 
                 auto icp_result = RegistrationICP(cluster, object_types_[object.type].point_cloud,
                     0.025, object.pose.inverse().matrix(), TransformationEstimationPointToPlane());
@@ -216,36 +236,36 @@ private:
                     object.active = true;
                     object.last_detected = detection_time;
                     object.pose = pose;
-                    detected_objects[cluster_matches[i]] = true;
-                } else {  // treat as new object
-                    auto [type, pose, fitness] = detect_new_object(cluster);
-
-                    if (fitness > fitness_threshold) {
-                        objects_.push_back({next_id++, true, pose, detection_time, type});
-                    }
+                    matched_clusters[object_matches[i]] = true;
                 }
-            } else {  // there is no nearby object
-                auto [type, pose, fitness] = detect_new_object(cluster);
-
-                if (fitness > fitness_threshold) {
-                    objects_.push_back({next_id++, true, pose, detection_time, type});
-                }
+            } else {  // there is no nearby cluster
+                object.active = false;
             }
         }
+        end = std::chrono::steady_clock::now();
+        ROS_INFO("Object matching: %ldms", std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
-        // deactivate objects that were not re-detected
-        // important to only go through non-newly-added objects here
-        for (size_t i = 0; i < detected_objects.size(); i++) {
-            if (detected_objects[i] == false) {
-                objects_[i].active = false;
+        begin = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < matched_clusters.size(); i++) {
+            if (matched_clusters[i])
+                continue;
+
+            auto [type, pose, fitness] = detect_new_object(clusters[valid_clusters[i]]);
+
+            if (fitness > fitness_threshold) {
+                objects_.push_back({next_id++, true, pose, detection_time, type});
             }
         }
+        end = std::chrono::steady_clock::now();
+        ROS_INFO("New object detection: %ldms", std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+
+        ROS_INFO("%zu objects", objects_.size());
 
         // delete objects that haven't been detected in a long time
         std::vector<Object> recent_objects;
         recent_objects.reserve(objects_.size());
         for (const auto& track: objects_) {
-            if (!track.active && track.last_detected - detection_time > ros::Duration(1)) {
+            if (!track.active && detection_time - track.last_detected > ros::Duration(1)) {
                 continue;
             }
 
@@ -262,7 +282,7 @@ private:
         cluster.EstimateNormals();
         auto cluster_features = *ComputeFPFHFeature(cluster);
 
-        RANSACConvergenceCriteria criteria(1000, 1.0);
+        RANSACConvergenceCriteria criteria(1000, 0.999);
         RegistrationResult best_result;
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
         ObjectType best_type;
@@ -498,7 +518,7 @@ private:
     ros::Publisher filtered_pub_;
     ros::Publisher detection_pub_;
 
-    size_t next_id = 0;
+    int next_id = 0;
     std::vector<Object> objects_;
 
     tf2_ros::Buffer tf_buffer_;

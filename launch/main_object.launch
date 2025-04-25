@@ -7,10 +7,10 @@
     <remap from="/filtered_point_cloud" to="/filter_cloud/filtered" />
     <!-- Parameters for cropping -->
     <param name="crop_min_x" type="double" value="0.0" />
-    <param name="crop_min_y" type="double" value="-0.2" />
+    <param name="crop_min_y" type="double" value="-0.17" />
     <param name="crop_min_z" type="double" value="0.0" />
-    <param name="crop_max_x" type="double" value="0.6" />
-    <param name="crop_max_y" type="double" value="0.2" />
+    <param name="crop_max_x" type="double" value="0.5" />
+    <param name="crop_max_y" type="double" value="0.17" />
     <param name="crop_max_z" type="double" value="0.15" />
     <!-- Parameter for downsampling -->
     <param name="voxel_size" type="double" value="0.003" />
@@ -19,7 +19,7 @@
   </node>
 
   <node name="object_reg_node" pkg="robot_manipulation" type="object_reg" output="screen">
-    <param name="cube_mesh_path" type="str" value="$(find robot_manipulation)/resources/cube.stl" />
+    <param name="mesh_folder" type="str" value="$(find robot_manipulation)/resources/meshes" />
 
     <remap from="/point_cloud" to="/filter_cloud/filtered" />
     <remap from="/rviz_debug" to="/object_reg/rviz_debug" />

@@ -3,6 +3,8 @@ project(robot_manipulation)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
 add_compile_options(-std=c++11)
+# add_compile_options(-std=c++11 -fsanitize=address,undefined)
+# add_link_options(-fsanitize=address,undefined)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
