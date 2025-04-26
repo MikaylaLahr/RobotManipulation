@@ -43,7 +43,7 @@
 #include "gs_matching.h"
 #include "ros/console.h"
 
-enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper };
+enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper, Can };
 
 struct ObjectTypeInfo {
     std::string mesh_path;
@@ -91,7 +91,7 @@ public:
         sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
         open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
 
-        auto cluster_clouds = cluster_cloud(o3d_cloud, 0.02, 10);
+        auto cluster_clouds = cluster_cloud(o3d_cloud, 0.02, 50);
         update_objects(std::move(cluster_clouds), cloud_msg->header.stamp);
 
         draw_objects();
@@ -111,6 +111,7 @@ private:
             {"wine", ObjectType::Wine},
             {"eggs", ObjectType::Eggs},
             {"toilet_paper", ObjectType::ToiletPaper},
+            {"can", ObjectType::Can}
         };
 
         open3d::io::ReadTriangleMeshOptions options;
@@ -122,7 +123,7 @@ private:
             open3d::geometry::TriangleMesh mesh;
             open3d::io::ReadTriangleMesh(entry.path().string(), mesh, options);
 
-            auto point_cloud = *mesh.SamplePointsUniformly(500, true);
+            auto point_cloud = *mesh.SamplePointsUniformly(200, true);
             auto features = *open3d::pipelines::registration::ComputeFPFHFeature(point_cloud);
 
             ObjectTypeInfo data{entry.path().string(), point_cloud, features};
@@ -191,7 +192,12 @@ private:
         std::vector<size_t> valid_clusters;
         valid_clusters.reserve(clusters.size());
         for (size_t i = 0; i < clusters.size(); i++) {
-            if (clusters[i].points_.size() < 500) continue;
+            if (clusters[i].points_.size() < 100)
+                continue;
+
+            if (clusters[i].GetMinimalOrientedBoundingBox().Volume() < 0.02 * 0.02 * 0.02)
+                continue;
+
             valid_clusters.push_back(i);
         }
         ROS_INFO("%zu valid clusters", valid_clusters.size());
@@ -199,7 +205,8 @@ private:
         std::vector<size_t> active_objects;
         active_objects.reserve(objects_.size());
         for (size_t i = 0; i < objects_.size(); i++) {
-            if (!objects_[i].active) continue;
+            if (!objects_[i].active)
+                continue;
             active_objects.push_back(i);
         }
         ROS_INFO("%zu active objects", active_objects.size());
@@ -230,6 +237,7 @@ private:
                     0.025, object.pose.inverse().matrix(), TransformationEstimationPointToPlane());
 
                 if (icp_result.fitness_ > fitness_threshold) {
+                    ROS_INFO("ICP success");
                     Eigen::Isometry3d transform(icp_result.transformation_);
                     Eigen::Isometry3d pose(transform.inverse());
 
@@ -285,7 +293,7 @@ private:
         cluster.EstimateNormals();
         auto cluster_features = *ComputeFPFHFeature(cluster);
 
-        RANSACConvergenceCriteria criteria(1000, 0.999);
+        RANSACConvergenceCriteria criteria(10000, 1.0);
         RegistrationResult best_result;
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
         ObjectType best_type;
@@ -293,16 +301,20 @@ private:
         assert(!object_types_.empty());
 
         for (const auto& [type, data]: object_types_) {
-            auto ransac_result = RegistrationRANSACBasedOnFeatureMatching(cluster, data.point_cloud,
-                cluster_features, data.features, false, 0.025,
-                TransformationEstimationPointToPoint(), 4, {}, criteria);
+            try {
+                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features,
+                    FastGlobalRegistrationOption()
+                );
 
-            auto icp_result = RegistrationICP(cluster, data.point_cloud, 0.025,
-                ransac_result.transformation_, TransformationEstimationPointToPlane());
+                auto icp_result = RegistrationICP(cluster, data.point_cloud, 0.01,
+                result.transformation_, TransformationEstimationPointToPlane());
 
-            if (icp_result.fitness_ > best_result.fitness_) {
-                best_result = icp_result;
-                best_type = type;
+                if (icp_result.IsBetterRANSACThan(best_result)) {
+                    best_result = icp_result;
+                    best_type = type;
+                }
+            } catch (...) {
+
             }
         }
 

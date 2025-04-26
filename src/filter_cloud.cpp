@@ -4,6 +4,7 @@
 #include <open3d/io/FileFormatIO.h>
 #include <open3d/io/ModelIO.h>
 #include <open3d/io/TriangleMeshIO.h>
+#include <open3d/pipelines/registration/ColoredICP.h>
 #include <open3d/pipelines/registration/FastGlobalRegistration.h>
 #include <open3d/pipelines/registration/Feature.h>
 #include <open3d/pipelines/registration/Registration.h>
@@ -87,7 +88,7 @@ public:
 
         open3d::geometry::PointCloud o3d_cloud_1 = convert_cloud_ros_to_open3d(transformed_1);
         open3d::geometry::PointCloud o3d_cloud_2 = convert_cloud_ros_to_open3d(transformed_2);
-
+        
         open3d::geometry::PointCloud o3d_cloud = o3d_cloud_1 + o3d_cloud_2;
 
         open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(

@@ -10,7 +10,7 @@
     <param name="crop_min_y" type="double" value="-0.17" />
     <param name="crop_min_z" type="double" value="0.0" />
     <param name="crop_max_x" type="double" value="0.5" />
-    <param name="crop_max_y" type="double" value="0.17" />
+    <param name="crop_max_y" type="double" value="0.19" />
     <param name="crop_max_z" type="double" value="0.15" />
     <!-- Parameter for downsampling -->
     <param name="voxel_size" type="double" value="0.003" />
@@ -32,7 +32,5 @@
     <arg name="use_rviz" value="true" />
     <arg name="use_sim" value="$(arg use_sim)" />
     <arg name="dual_camera" value="true" />
-    <arg name="color_fps" default="20"/>
-    <arg name="depth_fps" default="20"/>
   </include>
 </launch>
