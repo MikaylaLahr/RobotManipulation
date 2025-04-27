@@ -21,29 +21,34 @@
 #include <vision_msgs/BoundingBox3D.h>
 #include <rviz_visual_tools/rviz_visual_tools.h>
 #include <tf2_eigen/tf2_eigen.h>
-
 #include <open3d/Open3D.h>
 #include <boost/filesystem/operations.hpp>
-#include <chrono>
+#include <cassert>
+#include <exception>
 #include <limits>
+#include <opencv2/core/matx.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/imgproc.hpp>
-
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <string>
 #include <optional>
 #include <unordered_map>
 #include <vector>
 #include <boost/filesystem.hpp>
-
-#include "Eigen/src/Core/Matrix.h"
+#include <open3d_conversions/open3d_conversions.h>
+#include <opencv2/core.hpp>
+#include <opencv2/core/eigen.hpp>
 #include "Eigen/src/Geometry/Transform.h"
+#include "geometry_msgs/Vector3.h"
 #include "gs_matching.h"
-#include "ros/console.h"
+#include "opencv2/core/mat.hpp"
+#include "ros/duration.h"
+#include "ros/time.h"
+#include "std_msgs/ColorRGBA.h"
 
-enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper, Can };
+enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper, Can, None };
 
 struct ObjectTypeInfo {
     std::string mesh_path;
@@ -52,11 +57,36 @@ struct ObjectTypeInfo {
 };
 
 struct Object {
+    ObjectType type;
+    ros::Time redetection_time;
+    // has a pose if type != None
+    Eigen::Isometry3d pose;
+};
+
+struct ClusterFeature {
+    Eigen::Vector3d center;
+    cv::Vec3b color_hsv;  // 0-180, 0-255, 0-255
+    // features: convex hull volume? other volume?
+
+    double distance(const ClusterFeature &other) {
+        double hue_dist = 0.0;
+        if (std::abs(color_hsv[0] - other.color_hsv[0]) > 90) {
+            hue_dist = 180 - std::abs(color_hsv[0] - other.color_hsv[0]);
+        } else {
+            hue_dist = std::abs(color_hsv[0] - other.color_hsv[0]);
+        }
+
+        return (center - other.center).norm() + 0.005 * hue_dist;
+    }
+};
+
+struct ClusterTrack {
     int id;
     bool active;
-    Eigen::Isometry3d pose;
     ros::Time last_detected;
-    ObjectType type;
+    ClusterFeature feature;
+    open3d::geometry::PointCloud point_cloud;
+    Object object;
 };
 
 class ObjectRegistration {
@@ -76,6 +106,7 @@ public:
         ROS_INFO("Found %zu object meshes.", object_types_.size());
     }
 
+private:
     // Callback function for processing incoming PointCloud2 messages
     void point_cloud_callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg) {
         ROS_DEBUG("Received PointCloud2 message (%dx%d points) in frame '%s'.", cloud_msg->width,
@@ -88,19 +119,19 @@ public:
             return;
         }
 
-        sensor_msgs::PointCloud2 transformed = std::move(*transformed_opt);
-        open3d::geometry::PointCloud o3d_cloud = convert_cloud_ros_to_open3d(transformed);
+        sensor_msgs::PointCloud2::ConstPtr transformed = boost::make_shared<sensor_msgs::PointCloud2>(std::move(*transformed_opt));
+        open3d::geometry::PointCloud o3d_cloud;
+        open3d_conversions::rosToOpen3d(transformed, o3d_cloud);
 
         auto cluster_clouds = cluster_cloud(o3d_cloud, 0.02, 50);
-        update_objects(std::move(cluster_clouds), cloud_msg->header.stamp);
-
-        draw_objects();
+        update_tracks(std::move(cluster_clouds), cloud_msg->header.stamp);
+        update_objects();
+        draw_tracks();
 
         // TODO: use clusters to publish filtered cloud
         visual_tools_->trigger();
     }
 
-private:
     void read_meshes() {
         std::string mesh_folder;
         nh_.getParam("mesh_folder", mesh_folder);
@@ -123,7 +154,7 @@ private:
             open3d::geometry::TriangleMesh mesh;
             open3d::io::ReadTriangleMesh(entry.path().string(), mesh, options);
 
-            auto point_cloud = *mesh.SamplePointsUniformly(200, true);
+            auto point_cloud = *mesh.SamplePointsUniformly(100, true);
             auto features = *open3d::pipelines::registration::ComputeFPFHFeature(point_cloud);
 
             ObjectTypeInfo data{entry.path().string(), point_cloud, features};
@@ -136,164 +167,219 @@ private:
         }
     }
 
-    void draw_objects() {
-        for (const auto& track: objects_) {
+    void draw_tracks() {
+        for (const auto& track: tracks_) {
             if (!track.active) {
                 continue;
             }
 
-            ObjectTypeInfo info = object_types_[track.type];
+            cv::Vec3b rgb = hsv_to_rgb(track.feature.color_hsv);
+            std_msgs::ColorRGBA rgba;
+            rgba.r = static_cast<float>(rgb[0]) / 255;
+            rgba.g = static_cast<float>(rgb[1]) / 255;
+            rgba.b = static_cast<float>(rgb[2]) / 255;
+            rgba.a = 1.0;
 
-            Eigen::Isometry3d pose = track.pose;
-            visual_tools_->publishMesh(pose, std::string("file://") + info.mesh_path,
-                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id);
+            geometry_msgs::Vector3 scale;
+            scale.x = 0.01;
+            scale.y = 0.01;
+            scale.z = 0.01;
 
-            Eigen::Isometry3d text_pose = pose;
-            text_pose.translation() += Eigen::Vector3d(0, 0, 0.1);
+            Eigen::Isometry3d text_pose = Eigen::Isometry3d::Identity();
+            text_pose.translation() = track.feature.center + Eigen::Vector3d(0, 0, 0.1);
+            visual_tools_->publishSphere(track.feature.center, rgba, scale, "sphere", track.id);
             visual_tools_->publishText(text_pose, std::to_string(track.id),
                 rviz_visual_tools::WHITE, rviz_visual_tools::MEDIUM, false);
-        }
-    }
-
-    vision_msgs::Detection3DArray convert_objects_to_ros(std_msgs::Header header) {
-        vision_msgs::Detection3DArray detection_array;
-        detection_array.header = header;
-
-        for (const auto& track: objects_) {
-            if (!track.active) {
+            
+            if (track.object.type == ObjectType::None) {
                 continue;
             }
 
-            vision_msgs::Detection3D detection;
-            detection.header = header;
+            ObjectTypeInfo info = object_types_[track.object.type];
 
-            vision_msgs::BoundingBox3D bbox;
-            bbox.center = tf2::toMsg(track.pose);
-            detection.bbox = bbox;
-
-            vision_msgs::ObjectHypothesisWithPose hypothesis;
-            hypothesis.id = track.id;
-            hypothesis.pose.pose = tf2::toMsg(track.pose);
-            hypothesis.score = 1.0;
-            detection.results.push_back(hypothesis);
-
-            detection_array.detections.push_back(detection);
+            Eigen::Isometry3d pose = track.object.pose;
+            visual_tools_->publishMesh(pose, std::string("file://") + info.mesh_path,
+                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id);
         }
-
-        return detection_array;
     }
 
-    void update_objects(
+    // vision_msgs::Detection3DArray convert_objects_to_ros(std_msgs::Header header) {
+    //     vision_msgs::Detection3DArray detection_array;
+    //     detection_array.header = header;
+
+    //     for (const auto& track: tracks_) {
+    //         if (!track.active || !track.object) {
+    //             continue;
+    //         }
+
+    //         vision_msgs::Detection3D detection;
+    //         detection.header = header;
+
+    //         vision_msgs::BoundingBox3D bbox;
+    //         bbox.center = tf2::toMsg(track.object->pose);
+    //         detection.bbox = bbox;
+
+    //         vision_msgs::ObjectHypothesisWithPose hypothesis;
+    //         hypothesis.id = track.id;
+    //         hypothesis.pose.pose = tf2::toMsg(track.object->pose);
+    //         hypothesis.score = 1.0;
+    //         detection.results.push_back(hypothesis);
+
+    //         detection_array.detections.push_back(detection);
+    //     }
+
+    //     return detection_array;
+    // }
+
+    template<typename Distribution>
+    ros::Time generate_future_time(Distribution dist) {
+        double future_seconds = dist(gen);
+        if (future_seconds < 0) {
+            future_seconds = 0;
+        }
+        return ros::Time::now() + ros::Duration(future_seconds);
+    }
+
+    void update_tracks(
         std::vector<open3d::geometry::PointCloud> clusters, ros::Time detection_time) {
         using namespace open3d::pipelines::registration;
 
-        ROS_INFO("%zu clusters", clusters.size());
-
-        std::vector<size_t> valid_clusters;
-        valid_clusters.reserve(clusters.size());
-        for (size_t i = 0; i < clusters.size(); i++) {
-            if (clusters[i].points_.size() < 100)
-                continue;
-
-            if (clusters[i].GetMinimalOrientedBoundingBox().Volume() < 0.02 * 0.02 * 0.02)
-                continue;
-
-            valid_clusters.push_back(i);
-        }
-        ROS_INFO("%zu valid clusters", valid_clusters.size());
-
-        std::vector<size_t> active_objects;
-        active_objects.reserve(objects_.size());
-        for (size_t i = 0; i < objects_.size(); i++) {
-            if (!objects_[i].active)
-                continue;
-            active_objects.push_back(i);
-        }
-        ROS_INFO("%zu active objects", active_objects.size());
-
-        std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-        std::vector<int> object_matches = gale_shapley<size_t, size_t>(
-            active_objects, valid_clusters, [&](auto object_idx, auto cluster_idx) {
-                return (clusters[cluster_idx].GetCenter() - objects_[object_idx].pose.translation())
-                    .squaredNorm();
+        // TODO: this is slow because compute_cluster_feature is called over and over
+        std::vector<int> cluster_matches = gale_shapley<open3d::geometry::PointCloud, ClusterTrack>(
+            clusters, tracks_, [&](const auto &cluster, const auto &track) {
+                return compute_cluster_feature(cluster).distance(track.feature);
             });
-        std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-        ROS_INFO("GS: %ldms",
-            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
-        std::vector<bool> matched_clusters(valid_clusters.size(), false);
-        double fitness_threshold = 0.7;
+        std::vector<bool> active_tracks(tracks_.size(), false);
+        
+        for (size_t i = 0; i < cluster_matches.size(); i++) {
+            if (cluster_matches[i] != -1) {  // there is a matching track
+                auto& track = tracks_[cluster_matches[i]];
+                track.active = true;
+                track.last_detected = detection_time;
+                track.feature = compute_cluster_feature(clusters[i]);
+                track.point_cloud = std::move(clusters[i]);
+                active_tracks[cluster_matches[i]] = true;
+            } else {  // there is no matching track, treat as new cluster
+                ClusterTrack new_track;
+                new_track.id = next_id++;
+                new_track.active = true;
+                new_track.last_detected = detection_time;
+                new_track.feature = compute_cluster_feature(clusters[i]);
+                new_track.point_cloud = std::move(clusters[i]);
+                new_track.object.type = ObjectType::None;
+                new_track.object.redetection_time = generate_future_time(std::normal_distribution<double>(1.0, 0.3));
+                // no need to set pose, not allowed to read if type is none
 
-        begin = std::chrono::steady_clock::now();
-        for (size_t i = 0; i < object_matches.size(); i++) {
-            auto& object = objects_[active_objects[i]];
-
-            ROS_INFO("%d", object_matches[i]);
-
-            if (object_matches[i] != -1) {
-                auto& cluster = clusters[valid_clusters[object_matches[i]]];
-
-                auto icp_result = RegistrationICP(cluster, object_types_[object.type].point_cloud,
-                    0.025, object.pose.inverse().matrix(), TransformationEstimationPointToPlane());
-
-                if (icp_result.fitness_ > fitness_threshold) {
-                    ROS_INFO("ICP success");
-                    Eigen::Isometry3d transform(icp_result.transformation_);
-                    Eigen::Isometry3d pose(transform.inverse());
-
-                    object.active = true;
-                    object.last_detected = detection_time;
-                    object.pose = pose;
-                    matched_clusters[object_matches[i]] = true;
-                } else {  // treat cluster as new object
-                    object.active = false;
-                }
-            } else {  // there is no nearby cluster, treat cluster as new object
-                object.active = false;
+                tracks_.push_back(new_track);
             }
         }
-        end = std::chrono::steady_clock::now();
-        ROS_INFO("Object matching: %ldms",
-            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
-        begin = std::chrono::steady_clock::now();
-        for (size_t i = 0; i < matched_clusters.size(); i++) {
-            if (matched_clusters[i]) continue;
-
-            auto [type, pose, fitness] = detect_new_object(clusters[valid_clusters[i]]);
-
-            if (fitness > fitness_threshold) {
-                objects_.push_back({next_id++, true, pose, detection_time, type});
+        // deactivate tracks that weren't matched
+        for (size_t i = 0; i < active_tracks.size(); i++) {
+            if (!active_tracks[i]) {
+                tracks_[i].active = false;
             }
         }
-        end = std::chrono::steady_clock::now();
-        ROS_INFO("New object detection: %ldms",
-            std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 
-        ROS_INFO("%zu objects", objects_.size());
-
-        // delete objects that haven't been detected in a long time
-        std::vector<Object> recent_objects;
-        recent_objects.reserve(objects_.size());
-        for (const auto& track: objects_) {
-            if (!track.active && detection_time - track.last_detected > ros::Duration(1)) {
+        // delete tracks that haven't been detected in a long time
+        std::vector<ClusterTrack> recent_tracks;
+        recent_tracks.reserve(tracks_.size());
+        for (const auto& track: tracks_) {
+            if (!track.active && detection_time - track.last_detected > ros::Duration(30)) {
                 continue;
             }
-
-            recent_objects.push_back(track);
+            
+            recent_tracks.push_back(track);
         }
 
-        objects_ = std::move(recent_objects);
+        tracks_ = std::move(recent_tracks);
     }
 
-    std::tuple<ObjectType, Eigen::Isometry3d, double> detect_new_object(
+    void update_objects() {
+        using namespace open3d::pipelines::registration;
+
+        double fitness_threshold = 0.0;
+
+        for (auto &track: tracks_) {
+            if (!track.active) {
+                continue;
+            }
+
+            if (ros::Time::now() > track.object.redetection_time) {
+                ROS_INFO("Detecting from scratch track %d", track.id);
+                const auto &[type, pose, fitness] = detect_object_from_scratch(track.point_cloud);
+                if (fitness > fitness_threshold) {
+                    track.object.type = type;
+                    track.object.pose = pose;
+                    track.object.redetection_time = generate_future_time(std::normal_distribution<double>(5.0, 2.0));
+                } else {
+                    track.object.type = ObjectType::None;
+                    track.object.redetection_time = generate_future_time(std::normal_distribution<double>(10.0, 5.0));
+                }
+            } else {
+                if (track.object.type == ObjectType::None) {
+                    continue;
+                }
+
+                auto icp_result = RegistrationICP(track.point_cloud, object_types_[track.object.type].point_cloud,
+                    0.05, track.object.pose.inverse().matrix(), TransformationEstimationPointToPlane());
+
+                if (icp_result.fitness_ > fitness_threshold) {
+                    ROS_INFO("Track id %d passed fitness test", track.id);
+                    Eigen::Isometry3d transform(icp_result.transformation_);
+                    Eigen::Isometry3d pose(transform.inverse());
+                    track.object.pose = pose;
+                } else {
+                    track.object.type = ObjectType::None;
+                    track.object.redetection_time = generate_future_time(std::normal_distribution<double>(1.0, 0.3));
+                }
+            }
+        }
+    }
+
+    ClusterFeature compute_cluster_feature(const open3d::geometry::PointCloud &pc) {
+        assert(pc.HasColors());
+
+        Eigen::Vector3d avg_color = Eigen::Vector3d::Zero();
+        for (const auto& color : pc.colors_) {
+            avg_color += color;
+        }
+        avg_color /= pc.colors_.size();
+        
+        cv::Vec3b rgb(avg_color[0] * 255, avg_color[1] * 255, avg_color[2] * 255);
+
+        return {
+            pc.GetCenter(),
+            rgb_to_hsv(rgb),
+        };
+    }
+
+    cv::Vec3b hsv_to_rgb(const cv::Vec3b &hsv) {
+        assert(hsv[0] < 180);
+        cv::Mat3b hsv_mat(1, 1);
+        hsv_mat(0, 0) = hsv;
+        cv::Mat3b rgb_mat;
+        cv::cvtColor(hsv_mat, rgb_mat, cv::COLOR_HSV2RGB);
+        return rgb_mat(0, 0);
+    }
+
+    cv::Vec3b rgb_to_hsv(const cv::Vec3b &rgb) {
+        cv::Mat3b rgb_mat(1, 1);
+        rgb_mat(0, 0) = rgb;
+        cv::Mat3b hsv_mat;
+        cv::cvtColor(rgb_mat, hsv_mat, cv::COLOR_RGB2HSV);
+        return hsv_mat(0, 0);
+    }
+
+    std::tuple<ObjectType, Eigen::Isometry3d, double> detect_object_from_scratch(
         open3d::geometry::PointCloud& cluster) {
         using namespace open3d::pipelines::registration;
 
         cluster.EstimateNormals();
         auto cluster_features = *ComputeFPFHFeature(cluster);
 
-        RANSACConvergenceCriteria criteria(10000, 1.0);
+        RANSACConvergenceCriteria criteria(10000, 0.9999);
         RegistrationResult best_result;
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
         ObjectType best_type;
@@ -302,19 +388,27 @@ private:
 
         for (const auto& [type, data]: object_types_) {
             try {
-                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features,
-                    FastGlobalRegistrationOption()
-                );
+                // auto result = RegistrationRANSACBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features,
+                // false, 0.05, TransformationEstimationPointToPoint(), 4, {}, criteria
+                // );
+                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features);
 
                 auto icp_result = RegistrationICP(cluster, data.point_cloud, 0.01,
                 result.transformation_, TransformationEstimationPointToPlane());
+
+                open3d::geometry::PointCloud copy = cluster;
+                copy.Transform(icp_result.transformation_);
+                double min_z = copy.GetAxisAlignedBoundingBox().GetMinBound().z();
+                if (min_z < -0.1) {
+                    continue;
+                }
 
                 if (icp_result.IsBetterRANSACThan(best_result)) {
                     best_result = icp_result;
                     best_type = type;
                 }
             } catch (...) {
-
+                ROS_WARN("Failed to run object registration.");
             }
         }
 
@@ -356,159 +450,18 @@ private:
                     cluster_cloud.colors_.push_back(cloud.colors_[index]);
                 }
             }
+            
+            if (cluster_cloud.points_.size() < 50)
+                continue;
+
+            auto bbox = cluster_cloud.GetMinimalOrientedBoundingBox();
+            if (bbox.extent_.x() <= 0.02 || bbox.extent_.y() <= 0.02 || bbox.extent_.z() <= 0.02)
+                continue;
+
             cluster_clouds.push_back(cluster_cloud);
         }
 
         return cluster_clouds;
-    }
-
-    open3d::geometry::PointCloud convert_cloud_ros_to_open3d(
-        const sensor_msgs::PointCloud2& ros_cloud) {
-        open3d::geometry::PointCloud o3d_cloud;
-
-        sensor_msgs::PointCloud2ConstIterator<float> iter_x(ros_cloud, "x");
-        sensor_msgs::PointCloud2ConstIterator<float> iter_y(ros_cloud, "y");
-        sensor_msgs::PointCloud2ConstIterator<float> iter_z(ros_cloud, "z");
-        sensor_msgs::PointCloud2ConstIterator<float> iter_rgb(ros_cloud, "rgb");
-
-        size_t num_points = ros_cloud.width * ros_cloud.height;
-        size_t valid_points = 0;  // Counter for valid points added
-
-        // Resize buffers initially, we might shrink later if points are invalid
-        o3d_cloud.points_.resize(num_points);
-        o3d_cloud.colors_.resize(num_points);
-
-        for (size_t i = 0; i < num_points; ++i, ++iter_x, ++iter_y, ++iter_z, ++iter_rgb) {
-            // Check for NaN/Inf coordinates
-            if (std::isnan(*iter_x) || std::isnan(*iter_y) || std::isnan(*iter_z)
-                || std::isinf(*iter_x) || std::isinf(*iter_y) || std::isinf(*iter_z)) {
-                continue;  // Skip invalid points
-            }
-            o3d_cloud.points_[valid_points] = Eigen::Vector3d(*iter_x, *iter_y, *iter_z);
-
-            // --- RGB Extraction ---
-            uint8_t r = 0, g = 0, b = 0;
-
-            float rgb_data = *iter_rgb;
-
-            // Packed FLOAT32 - Need to reinterpret bits as uint32
-            uint32_t packed_rgb;
-            std::memcpy(&packed_rgb, &rgb_data, sizeof(uint32_t));
-            r = (packed_rgb >> 16) & 0xFF;
-            g = (packed_rgb >> 8) & 0xFF;
-            b = packed_rgb & 0xFF;
-
-            // Normalize color values to [0.0, 1.0] for Open3D
-            double r_norm = static_cast<double>(r) / 255.0;
-            double g_norm = static_cast<double>(g) / 255.0;
-            double b_norm = static_cast<double>(b) / 255.0;
-
-            o3d_cloud.colors_[valid_points] = Eigen::Vector3d(r_norm, g_norm, b_norm);
-            valid_points++;
-        }
-        // Resize down to the actual number of valid points processed
-        o3d_cloud.points_.resize(valid_points);
-        o3d_cloud.colors_.resize(valid_points);
-
-        return o3d_cloud;
-    }
-
-    sensor_msgs::PointCloud2 convert_cloud_open3d_to_ros(
-        const open3d::geometry::PointCloud& o3d_cloud, const std_msgs::Header& header) {
-        sensor_msgs::PointCloud2 ros_cloud;
-
-        ros_cloud.header = header;
-
-        ros_cloud.height = 1;  // Default to unorganized cloud
-        ros_cloud.width = o3d_cloud.points_.size();
-
-        bool has_colors = o3d_cloud.HasColors();
-
-        // Define PointFields
-        ros_cloud.fields.clear();  // Clear existing fields
-        int offset = 0;
-
-        // Add XYZ fields (FLOAT32)
-        sensor_msgs::PointField field_x, field_y, field_z, field_rgb;
-        field_x.name = "x";
-        field_x.offset = offset;
-        field_x.datatype = sensor_msgs::PointField::FLOAT32;
-        field_x.count = 1;
-        ros_cloud.fields.push_back(field_x);
-        offset += sizeof(float);
-
-        field_y.name = "y";
-        field_y.offset = offset;
-        field_y.datatype = sensor_msgs::PointField::FLOAT32;
-        field_y.count = 1;
-        ros_cloud.fields.push_back(field_y);
-        offset += sizeof(float);
-
-        field_z.name = "z";
-        field_z.offset = offset;
-        field_z.datatype = sensor_msgs::PointField::FLOAT32;
-        field_z.count = 1;
-        ros_cloud.fields.push_back(field_z);
-        offset += sizeof(float);
-
-        // Add RGB field (packed into a FLOAT32) if colors exist
-        if (has_colors) {
-            field_rgb.name = "rgb";
-            field_rgb.offset = offset;
-            field_rgb.datatype =
-                sensor_msgs::PointField::FLOAT32;  // Standard practice in PCL/ROS for packed RGB
-            field_rgb.count = 1;
-            ros_cloud.fields.push_back(field_rgb);
-            offset += sizeof(float);
-        }
-
-        // Set PointCloud2 metadata
-        ros_cloud.point_step = offset;  // Size of one point in bytes
-        ros_cloud.row_step = ros_cloud.point_step * ros_cloud.width;
-        ros_cloud.is_dense = true;       // Open3D clouds are typically dense after processing NaNs
-        ros_cloud.is_bigendian = false;  // Typically false on x86/amd64
-
-        // Allocate data buffer
-        ros_cloud.data.resize(
-            ros_cloud.row_step * ros_cloud.height);  // Should be row_step since height=1
-
-        // Fill data buffer
-        for (size_t i = 0; i < ros_cloud.width; ++i) {
-            // Calculate point's base offset in the data buffer
-            size_t base_offset = i * ros_cloud.point_step;
-
-            // Copy XYZ (casting Eigen::Vector3d (double) to float)
-            float x = static_cast<float>(o3d_cloud.points_[i].x());
-            float y = static_cast<float>(o3d_cloud.points_[i].y());
-            float z = static_cast<float>(o3d_cloud.points_[i].z());
-            std::memcpy(&ros_cloud.data[base_offset + field_x.offset], &x, sizeof(float));
-            std::memcpy(&ros_cloud.data[base_offset + field_y.offset], &y, sizeof(float));
-            std::memcpy(&ros_cloud.data[base_offset + field_z.offset], &z, sizeof(float));
-
-            // Copy RGB if present
-            if (has_colors) {
-                // Clamp and convert normalized double [0,1] color to uint8 [0,255]
-                uint8_t r = static_cast<uint8_t>(
-                    std::max(0.0, std::min(1.0, o3d_cloud.colors_[i].x())) * 255.0);
-                uint8_t g = static_cast<uint8_t>(
-                    std::max(0.0, std::min(1.0, o3d_cloud.colors_[i].y())) * 255.0);
-                uint8_t b = static_cast<uint8_t>(
-                    std::max(0.0, std::min(1.0, o3d_cloud.colors_[i].z())) * 255.0);
-
-                // Pack RGB into a single uint32
-                uint32_t packed_rgb = (static_cast<uint32_t>(r) << 16)
-                                      | (static_cast<uint32_t>(g) << 8)
-                                      | (static_cast<uint32_t>(b));
-
-                // Reinterpret the uint32 as a float and copy
-                float rgb_float;
-                std::memcpy(&rgb_float, &packed_rgb, sizeof(uint32_t));
-                std::memcpy(
-                    &ros_cloud.data[base_offset + field_rgb.offset], &rgb_float, sizeof(float));
-            }
-        }
-
-        return ros_cloud;
     }
 
     std::optional<sensor_msgs::PointCloud2> transform_point_cloud(
@@ -534,7 +487,7 @@ private:
     ros::Publisher detection_pub_;
 
     int next_id = 0;
-    std::vector<Object> objects_;
+    std::vector<ClusterTrack> tracks_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -543,6 +496,9 @@ private:
     rviz_visual_tools::RvizVisualToolsPtr visual_tools_;
 
     std::unordered_map<ObjectType, ObjectTypeInfo> object_types_;
+
+    std::random_device rd{};
+    std::mt19937 gen{rd()};
 };
 
 int main(int argc, char** argv) {

@@ -17,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_sensor_msgs
   rviz_visual_tools
   message_filters
+  open3d_conversions
 )
 
 ## System dependencies are found with CMake's conventions
@@ -166,6 +167,7 @@ target_link_libraries(box_detector
 target_link_libraries(object_reg
   ${catkin_LIBRARIES}
   ${Open3D_LIBRARIES}
+  ${OpenCV_LIBS}
 )
 
 target_link_libraries(filter_cloud
