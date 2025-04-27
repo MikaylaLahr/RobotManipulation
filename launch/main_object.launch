@@ -13,7 +13,7 @@
     <param name="crop_max_y" type="double" value="0.19" />
     <param name="crop_max_z" type="double" value="0.15" />
     <!-- Parameter for downsampling -->
-    <param name="voxel_size" type="double" value="0.007" />
+    <param name="voxel_size" type="double" value="0.003" />
     <!-- Parameter for target frame -->
     <param name="base_link_frame" type="str" value="wx250s/base_link" />
   </node>

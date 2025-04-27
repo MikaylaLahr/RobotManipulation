@@ -24,8 +24,8 @@
 #include <open3d/Open3D.h>
 #include <boost/filesystem/operations.hpp>
 #include <cassert>
-#include <exception>
 #include <limits>
+#include <memory>
 #include <opencv2/core/matx.hpp>
 #include <opencv2/core/types.hpp>
 #include <opencv2/imgproc.hpp>
@@ -124,11 +124,18 @@ private:
         open3d_conversions::rosToOpen3d(transformed, o3d_cloud);
 
         auto cluster_clouds = cluster_cloud(o3d_cloud, 0.02, 50);
+        open3d::geometry::PointCloud filtered;
+        for (const auto& cluster : cluster_clouds) {
+            filtered += cluster;
+        }
+
         update_tracks(std::move(cluster_clouds), cloud_msg->header.stamp);
         update_objects();
         draw_tracks();
 
-        // TODO: use clusters to publish filtered cloud
+        sensor_msgs::PointCloud2 ros_filtered;
+        open3d_conversions::open3dToRos(filtered, ros_filtered, transformed->header.frame_id);
+        filtered_pub_.publish(ros_filtered);
         visual_tools_->trigger();
     }
 
@@ -137,12 +144,12 @@ private:
         nh_.getParam("mesh_folder", mesh_folder);
 
         std::unordered_map<std::string, ObjectType> name_type_map{
-            {"cube", ObjectType::Cube},
-            {"milk", ObjectType::Milk},
+            // {"cube", ObjectType::Cube},
+            // {"milk", ObjectType::Milk},
             {"wine", ObjectType::Wine},
-            {"eggs", ObjectType::Eggs},
-            {"toilet_paper", ObjectType::ToiletPaper},
-            {"can", ObjectType::Can}
+            // {"eggs", ObjectType::Eggs},
+            // {"toilet_paper", ObjectType::ToiletPaper},
+            // {"can", ObjectType::Can}
         };
 
         open3d::io::ReadTriangleMeshOptions options;
@@ -154,7 +161,7 @@ private:
             open3d::geometry::TriangleMesh mesh;
             open3d::io::ReadTriangleMesh(entry.path().string(), mesh, options);
 
-            auto point_cloud = *mesh.SamplePointsUniformly(100, true);
+            auto point_cloud = *mesh.SamplePointsUniformly(2000, true);
             auto features = *open3d::pipelines::registration::ComputeFPFHFeature(point_cloud);
 
             ObjectTypeInfo data{entry.path().string(), point_cloud, features};
@@ -187,7 +194,8 @@ private:
 
             Eigen::Isometry3d text_pose = Eigen::Isometry3d::Identity();
             text_pose.translation() = track.feature.center + Eigen::Vector3d(0, 0, 0.1);
-            visual_tools_->publishSphere(track.feature.center, rgba, scale, "sphere", track.id);
+            // avoid id = 0
+            visual_tools_->publishSphere(track.feature.center, rgba, scale, "sphere", track.id + 1);
             visual_tools_->publishText(text_pose, std::to_string(track.id),
                 rviz_visual_tools::WHITE, rviz_visual_tools::MEDIUM, false);
             
@@ -199,7 +207,7 @@ private:
 
             Eigen::Isometry3d pose = track.object.pose;
             visual_tools_->publishMesh(pose, std::string("file://") + info.mesh_path,
-                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id);
+                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id + 1);
         }
     }
 
@@ -299,7 +307,7 @@ private:
     void update_objects() {
         using namespace open3d::pipelines::registration;
 
-        double fitness_threshold = 0.0;
+        double fitness_threshold = -0.1;
 
         for (auto &track: tracks_) {
             if (!track.active) {
@@ -309,6 +317,7 @@ private:
             if (ros::Time::now() > track.object.redetection_time) {
                 ROS_INFO("Detecting from scratch track %d", track.id);
                 const auto &[type, pose, fitness] = detect_object_from_scratch(track.point_cloud);
+                ROS_INFO("Fitness %f", fitness);
                 if (fitness > fitness_threshold) {
                     track.object.type = type;
                     track.object.pose = pose;
@@ -379,7 +388,11 @@ private:
         cluster.EstimateNormals();
         auto cluster_features = *ComputeFPFHFeature(cluster);
 
-        RANSACConvergenceCriteria criteria(10000, 0.9999);
+        RANSACConvergenceCriteria criteria(10000, 1.0);
+        FastGlobalRegistrationOption options(1.4, true, true, 0.5, 64, 0.95, 1000, true);
+        auto loss = std::make_shared<TukeyLoss>(0.5);
+        TransformationEstimationPointToPlane estimation(loss);
+
         RegistrationResult best_result;
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
         ObjectType best_type;
@@ -389,19 +402,18 @@ private:
         for (const auto& [type, data]: object_types_) {
             try {
                 // auto result = RegistrationRANSACBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features,
-                // false, 0.05, TransformationEstimationPointToPoint(), 4, {}, criteria
+                // false, 0.05, TransformationEstimationPointToPlane(), 4, {}, criteria
                 // );
-                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features);
+                auto result = FastGlobalRegistrationBasedOnFeatureMatching(
+                    data.point_cloud, data.point_cloud, cluster_features, data.features, FastGlobalRegistrationOption()
+                );
 
-                auto icp_result = RegistrationICP(cluster, data.point_cloud, 0.01,
-                result.transformation_, TransformationEstimationPointToPlane());
+                // auto icp_result = RegistrationICP(cluster, data.point_cloud, 0.01,
+                // result.transformation_, TransformationEstimationPointToPlane());
+                auto icp_result = result;
 
-                open3d::geometry::PointCloud copy = cluster;
-                copy.Transform(icp_result.transformation_);
-                double min_z = copy.GetAxisAlignedBoundingBox().GetMinBound().z();
-                if (min_z < -0.1) {
-                    continue;
-                }
+                ROS_INFO("RANSAC fitness %f", result.fitness_);
+                ROS_INFO("ICP fitness %f", icp_result.fitness_);
 
                 if (icp_result.IsBetterRANSACThan(best_result)) {
                     best_result = icp_result;
@@ -450,13 +462,16 @@ private:
                     cluster_cloud.colors_.push_back(cloud.colors_[index]);
                 }
             }
+
+            const auto &[removed, _] = cluster_cloud.RemoveStatisticalOutliers(30, 2.0);
+            cluster_cloud = *removed;
             
-            if (cluster_cloud.points_.size() < 50)
+            if (cluster_cloud.points_.size() < 200)
                 continue;
 
-            auto bbox = cluster_cloud.GetMinimalOrientedBoundingBox();
-            if (bbox.extent_.x() <= 0.02 || bbox.extent_.y() <= 0.02 || bbox.extent_.z() <= 0.02)
-                continue;
+            // auto bbox = cluster_cloud.GetMinimalOrientedBoundingBox();
+            // if (bbox.extent_.x() <= 0.02 || bbox.extent_.y() <= 0.02 || bbox.extent_.z() <= 0.02)
+            //     continue;
 
             cluster_clouds.push_back(cluster_cloud);
         }
