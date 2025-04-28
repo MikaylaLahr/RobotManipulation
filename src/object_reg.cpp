@@ -1,14 +1,6 @@
-#include <open3d/geometry/BoundingVolume.h>
-#include <open3d/geometry/PointCloud.h>
-#include <open3d/geometry/TriangleMesh.h>
-#include <open3d/io/FileFormatIO.h>
-#include <open3d/io/ModelIO.h>
-#include <open3d/io/TriangleMeshIO.h>
-#include <open3d/pipelines/registration/FastGlobalRegistration.h>
-#include <open3d/pipelines/registration/Feature.h>
-#include <open3d/pipelines/registration/Registration.h>
-#include <open3d/pipelines/registration/RobustKernel.h>
-#include <open3d/pipelines/registration/TransformationEstimation.h>
+#include <pcl/PCLPointCloud2.h>
+#include <pcl/conversions.h>
+#include <pcl/filters/filter_indices.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
@@ -21,14 +13,8 @@
 #include <vision_msgs/BoundingBox3D.h>
 #include <rviz_visual_tools/rviz_visual_tools.h>
 #include <tf2_eigen/tf2_eigen.h>
-#include <open3d/Open3D.h>
 #include <boost/filesystem/operations.hpp>
 #include <cassert>
-#include <limits>
-#include <memory>
-#include <opencv2/core/matx.hpp>
-#include <opencv2/core/types.hpp>
-#include <opencv2/imgproc.hpp>
 #include <cmath>
 #include <cstddef>
 #include <random>
@@ -37,23 +23,25 @@
 #include <unordered_map>
 #include <vector>
 #include <boost/filesystem.hpp>
-#include <open3d_conversions/open3d_conversions.h>
-#include <opencv2/core.hpp>
-#include <opencv2/core/eigen.hpp>
-#include "Eigen/src/Geometry/Transform.h"
 #include "geometry_msgs/Vector3.h"
 #include "gs_matching.h"
-#include "opencv2/core/mat.hpp"
 #include "ros/duration.h"
 #include "ros/time.h"
 #include "std_msgs/ColorRGBA.h"
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/io/vtk_lib_io.h>
+#include <pcl/point_types_conversion.h>
+#include <pcl/search/kdtree.h>
+#include <pcl/common/centroid.h>
+#include <pcl/segmentation/conditional_euclidean_clustering.h>
 
 enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper, Can, None };
 
 struct ObjectTypeInfo {
     std::string mesh_path;
-    open3d::geometry::PointCloud point_cloud;
-    open3d::pipelines::registration::Feature features;
+    pcl::PointCloud<pcl::PointXYZ> point_cloud;
 };
 
 struct Object {
@@ -63,30 +51,17 @@ struct Object {
     Eigen::Isometry3d pose;
 };
 
-struct ClusterFeature {
-    Eigen::Vector3d center;
-    cv::Vec3b color_hsv;  // 0-180, 0-255, 0-255
-    // features: convex hull volume? other volume?
-
-    double distance(const ClusterFeature &other) {
-        double hue_dist = 0.0;
-        if (std::abs(color_hsv[0] - other.color_hsv[0]) > 90) {
-            hue_dist = 180 - std::abs(color_hsv[0] - other.color_hsv[0]);
-        } else {
-            hue_dist = std::abs(color_hsv[0] - other.color_hsv[0]);
-        }
-
-        return (center - other.center).norm() + 0.005 * hue_dist;
-    }
-};
-
 struct ClusterTrack {
     int id;
     bool active;
     ros::Time last_detected;
-    ClusterFeature feature;
-    open3d::geometry::PointCloud point_cloud;
+    pcl::PointCloud<pcl::PointXYZHSV> point_cloud;
+    pcl::PointXYZHSV mean;
     Object object;
+
+    Eigen::Vector3d cluster_center() const {
+        return Eigen::Vector3d(mean.x, mean.y, mean.z);
+    }
 };
 
 class ObjectRegistration {
@@ -119,23 +94,19 @@ private:
             return;
         }
 
-        sensor_msgs::PointCloud2::ConstPtr transformed = boost::make_shared<sensor_msgs::PointCloud2>(std::move(*transformed_opt));
-        open3d::geometry::PointCloud o3d_cloud;
-        open3d_conversions::rosToOpen3d(transformed, o3d_cloud);
+        pcl::PCLPointCloud2 pc2;
+        pcl_conversions::toPCL(*transformed_opt, pc2);
+        pcl::PointCloud<pcl::PointXYZRGB> pcl_cloud;
+        pcl::fromPCLPointCloud2(pc2, pcl_cloud);
 
-        auto cluster_clouds = cluster_cloud(o3d_cloud, 0.02, 50);
-        open3d::geometry::PointCloud filtered;
-        for (const auto& cluster : cluster_clouds) {
-            filtered += cluster;
-        }
+        pcl::PointCloud<pcl::PointXYZHSV> hsv;
+        pcl::PointCloudXYZRGBtoXYZHSV(pcl_cloud, hsv);
 
-        update_tracks(std::move(cluster_clouds), cloud_msg->header.stamp);
-        update_objects();
+        auto cloud_ptr = boost::make_shared<pcl::PointCloud<pcl::PointXYZHSV>>(hsv);
+        auto clusters = cluster_cloud(cloud_ptr);
+        update_tracks(std::move(clusters), cloud_msg->header.stamp);
         draw_tracks();
 
-        sensor_msgs::PointCloud2 ros_filtered;
-        open3d_conversions::open3dToRos(filtered, ros_filtered, transformed->header.frame_id);
-        filtered_pub_.publish(ros_filtered);
         visual_tools_->trigger();
     }
 
@@ -152,19 +123,15 @@ private:
             // {"can", ObjectType::Can}
         };
 
-        open3d::io::ReadTriangleMeshOptions options;
-        options.enable_post_processing = false;
-        options.print_progress = false;
-
         for (const auto& entry:
             boost::make_iterator_range(boost::filesystem::directory_iterator(mesh_folder), {})) {
-            open3d::geometry::TriangleMesh mesh;
-            open3d::io::ReadTriangleMesh(entry.path().string(), mesh, options);
+            
+            pcl::PolygonMesh mesh;
+            pcl::io::loadPolygonFileSTL(entry.path().string(), mesh);
+            pcl::PointCloud<pcl::PointXYZ> cloud;
+            pcl::fromPCLPointCloud2(mesh.cloud, cloud);
 
-            auto point_cloud = *mesh.SamplePointsUniformly(2000, true);
-            auto features = *open3d::pipelines::registration::ComputeFPFHFeature(point_cloud);
-
-            ObjectTypeInfo data{entry.path().string(), point_cloud, features};
+            ObjectTypeInfo data{entry.path().string(), cloud};
 
             std::string filename = entry.path().filename().replace_extension("").string();
             if (name_type_map.find(filename) != name_type_map.end()) {
@@ -180,11 +147,13 @@ private:
                 continue;
             }
 
-            cv::Vec3b rgb = hsv_to_rgb(track.feature.color_hsv);
+            pcl::PointXYZRGB rgb;
+            pcl::PointXYZHSVtoXYZRGB(track.mean, rgb);
+
             std_msgs::ColorRGBA rgba;
-            rgba.r = static_cast<float>(rgb[0]) / 255;
-            rgba.g = static_cast<float>(rgb[1]) / 255;
-            rgba.b = static_cast<float>(rgb[2]) / 255;
+            rgba.r = static_cast<float>(rgb.r) / 255;
+            rgba.g = static_cast<float>(rgb.g) / 255;
+            rgba.b = static_cast<float>(rgb.b) / 255;
             rgba.a = 1.0;
 
             geometry_msgs::Vector3 scale;
@@ -192,10 +161,12 @@ private:
             scale.y = 0.01;
             scale.z = 0.01;
 
+            Eigen::Vector3d center(track.mean.x, track.mean.y, track.mean.z);
+
             Eigen::Isometry3d text_pose = Eigen::Isometry3d::Identity();
-            text_pose.translation() = track.feature.center + Eigen::Vector3d(0, 0, 0.1);
+            text_pose.translation() = center + Eigen::Vector3d(0, 0, 0.1);
             // avoid id = 0
-            visual_tools_->publishSphere(track.feature.center, rgba, scale, "sphere", track.id + 1);
+            visual_tools_->publishSphere(center, rgba, scale, "sphere", track.id + 1);
             visual_tools_->publishText(text_pose, std::to_string(track.id),
                 rviz_visual_tools::WHITE, rviz_visual_tools::MEDIUM, false);
             
@@ -249,52 +220,80 @@ private:
     }
 
     void update_tracks(
-        std::vector<open3d::geometry::PointCloud> clusters, ros::Time detection_time) {
-        using namespace open3d::pipelines::registration;
+        std::vector<pcl::PointCloud<pcl::PointXYZHSV>> clusters, ros::Time detection_time) {
 
-        // TODO: this is slow because compute_cluster_feature is called over and over
-        std::vector<int> cluster_matches = gale_shapley<open3d::geometry::PointCloud, ClusterTrack>(
-            clusters, tracks_, [&](const auto &cluster, const auto &track) {
-                return compute_cluster_feature(cluster).distance(track.feature);
+        std::vector<pcl::PointXYZHSV> hsv_means(clusters.size());
+        for (size_t i = 0; i < clusters.size(); i++) {
+            hsv_means[i] = compute_cluster_mean(clusters[i]);
+        }
+
+        std::vector<pcl::PointXYZHSV> hsv_track_means(tracks_.size());
+        for (size_t i = 0; i < tracks_.size(); i++) {
+            hsv_track_means[i] = tracks_[i].mean;
+        }
+
+        std::vector<int> track_matches = gale_shapley<pcl::PointXYZHSV, pcl::PointXYZHSV>(
+            hsv_track_means, hsv_means, [&](const pcl::PointXYZHSV& track, const pcl::PointXYZHSV& cluster) {
+                // double hue_dist = 0.0;
+                // if (std::abs(cluster.h - track.h) > 180) {
+                //     hue_dist = 360 - std::abs(cluster.h - track.h);
+                // } else {
+                //     hue_dist = std::abs(cluster.h - track.h);
+                // }
+                // assert(hue_dist <= 180.0);
+
+                // double sat_dist = std::abs(cluster.s - track.s);
+                // double val_dist = std::abs(cluster.v - track.v);
+
+                // Eigen::Vector3d cluster_center(cluster.x, cluster.y, cluster.z);
+                // Eigen::Vector3d track_center(track.x, track.y, track.z);
+                // double physical_dist = (cluster_center - track_center).norm();
+
+                // double sat_threshold = 0.1;
+                // double val_threshold = 0.1;
+                // if (cluster.v > val_threshold && track.v > val_threshold && cluster.s > sat_threshold && track.s > sat_threshold) {
+                //     return std::pow((cluster_center - track_center).norm(), 3) + 0.0025 * hue_dist + 0.2 * sat_dist + 0.2 * val_dist;
+                // } else {
+                //     return std::pow((cluster_center - track_center).norm(), 3) + 0.2 * sat_dist + 0.2 * val_dist;
+                // }
             });
 
-        std::vector<bool> active_tracks(tracks_.size(), false);
+        std::vector<bool> found_clusters(clusters.size(), false);
         
-        for (size_t i = 0; i < cluster_matches.size(); i++) {
-            if (cluster_matches[i] != -1) {  // there is a matching track
-                auto& track = tracks_[cluster_matches[i]];
+        for (size_t i = 0; i < track_matches.size(); i++) {
+            auto &track = tracks_[i];
+
+            if (track_matches[i] != -1) {
+                const auto &cluster = clusters[track_matches[i]];
+                found_clusters[track_matches[i]] = true;
                 track.active = true;
                 track.last_detected = detection_time;
-                track.feature = compute_cluster_feature(clusters[i]);
+                track.mean = compute_cluster_mean(cluster);
+                track.point_cloud = std::move(cluster);
+            } else {
+                track.active = false;
+            }
+        }
+
+        for (size_t i = 0; i < clusters.size(); i++) {
+            if (!found_clusters[i]) {
+                ClusterTrack track;
+                track.id = next_id++;
+                track.active = true;
+                track.last_detected = detection_time;
+                track.mean = compute_cluster_mean(clusters[i]);
                 track.point_cloud = std::move(clusters[i]);
-                active_tracks[cluster_matches[i]] = true;
-            } else {  // there is no matching track, treat as new cluster
-                ClusterTrack new_track;
-                new_track.id = next_id++;
-                new_track.active = true;
-                new_track.last_detected = detection_time;
-                new_track.feature = compute_cluster_feature(clusters[i]);
-                new_track.point_cloud = std::move(clusters[i]);
-                new_track.object.type = ObjectType::None;
-                new_track.object.redetection_time = generate_future_time(std::normal_distribution<double>(1.0, 0.3));
-                // no need to set pose, not allowed to read if type is none
-
-                tracks_.push_back(new_track);
+                track.object.type = ObjectType::None;
+                track.object.redetection_time = ros::Time::ZERO;
+                tracks_.push_back(track);
             }
         }
 
-        // deactivate tracks that weren't matched
-        for (size_t i = 0; i < active_tracks.size(); i++) {
-            if (!active_tracks[i]) {
-                tracks_[i].active = false;
-            }
-        }
-
-        // delete tracks that haven't been detected in a long time
+        // delete tracks that haven't been detected
         std::vector<ClusterTrack> recent_tracks;
         recent_tracks.reserve(tracks_.size());
         for (const auto& track: tracks_) {
-            if (!track.active && detection_time - track.last_detected > ros::Duration(30)) {
+            if (!track.active && detection_time - track.last_detected > ros::Duration(1)) {
                 continue;
             }
             
@@ -304,179 +303,111 @@ private:
         tracks_ = std::move(recent_tracks);
     }
 
-    void update_objects() {
-        using namespace open3d::pipelines::registration;
+    pcl::PointXYZHSV compute_cluster_mean(const pcl::PointCloud<pcl::PointXYZHSV> &cluster) {
+        Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
+        Eigen::Vector2f hue_avg = Eigen::Vector2f::Zero();
+        float sat_avg = 0;
+        float val_avg = 0;
+        size_t num_hue_avg = 0;
 
-        double fitness_threshold = -0.1;
+        for (const auto &point: cluster) {
+            centroid += point.getVector3fMap();
 
-        for (auto &track: tracks_) {
-            if (!track.active) {
-                continue;
+            if (point.s > 0.2) {
+                float hue_rad = point.h / 180 * M_PI;
+                Eigen::Vector2f hue_vec(std::cos(hue_rad), std::sin(hue_rad));
+                hue_avg += hue_vec;
+                num_hue_avg++;
             }
 
-            if (ros::Time::now() > track.object.redetection_time) {
-                ROS_INFO("Detecting from scratch track %d", track.id);
-                const auto &[type, pose, fitness] = detect_object_from_scratch(track.point_cloud);
-                ROS_INFO("Fitness %f", fitness);
-                if (fitness > fitness_threshold) {
-                    track.object.type = type;
-                    track.object.pose = pose;
-                    track.object.redetection_time = generate_future_time(std::normal_distribution<double>(5.0, 2.0));
-                } else {
-                    track.object.type = ObjectType::None;
-                    track.object.redetection_time = generate_future_time(std::normal_distribution<double>(10.0, 5.0));
-                }
-            } else {
-                if (track.object.type == ObjectType::None) {
-                    continue;
-                }
-
-                auto icp_result = RegistrationICP(track.point_cloud, object_types_[track.object.type].point_cloud,
-                    0.05, track.object.pose.inverse().matrix(), TransformationEstimationPointToPlane());
-
-                if (icp_result.fitness_ > fitness_threshold) {
-                    ROS_INFO("Track id %d passed fitness test", track.id);
-                    Eigen::Isometry3d transform(icp_result.transformation_);
-                    Eigen::Isometry3d pose(transform.inverse());
-                    track.object.pose = pose;
-                } else {
-                    track.object.type = ObjectType::None;
-                    track.object.redetection_time = generate_future_time(std::normal_distribution<double>(1.0, 0.3));
-                }
-            }
+            sat_avg += point.s;
+            val_avg += point.v;
         }
-    }
+        centroid /= cluster.size();
+        hue_avg /= num_hue_avg;
+        sat_avg /= cluster.size();
+        val_avg /= cluster.size();
 
-    ClusterFeature compute_cluster_feature(const open3d::geometry::PointCloud &pc) {
-        assert(pc.HasColors());
+        pcl::PointXYZHSV mean;
+        mean.x = centroid.x();
+        mean.y = centroid.y();
+        mean.z = centroid.z();
 
-        Eigen::Vector3d avg_color = Eigen::Vector3d::Zero();
-        for (const auto& color : pc.colors_) {
-            avg_color += color;
+        if (num_hue_avg > 0.1 * cluster.size()) {
+            mean.h = std::fmod(std::atan2(hue_avg.y(), hue_avg.x()) / M_PI * 180, 180);
+        } else {
+            mean.h = 0;
         }
-        avg_color /= pc.colors_.size();
-        
-        cv::Vec3b rgb(avg_color[0] * 255, avg_color[1] * 255, avg_color[2] * 255);
+        mean.s = sat_avg;
+        mean.v = val_avg;
 
-        return {
-            pc.GetCenter(),
-            rgb_to_hsv(rgb),
-        };
+        return mean;
     }
 
-    cv::Vec3b hsv_to_rgb(const cv::Vec3b &hsv) {
-        assert(hsv[0] < 180);
-        cv::Mat3b hsv_mat(1, 1);
-        hsv_mat(0, 0) = hsv;
-        cv::Mat3b rgb_mat;
-        cv::cvtColor(hsv_mat, rgb_mat, cv::COLOR_HSV2RGB);
-        return rgb_mat(0, 0);
-    }
+    // void update_objects() {
+    //     for (auto &track: tracks_) {
+    //         if (!track.active) {
+    //             continue;
+    //         }
 
-    cv::Vec3b rgb_to_hsv(const cv::Vec3b &rgb) {
-        cv::Mat3b rgb_mat(1, 1);
-        rgb_mat(0, 0) = rgb;
-        cv::Mat3b hsv_mat;
-        cv::cvtColor(rgb_mat, hsv_mat, cv::COLOR_RGB2HSV);
-        return hsv_mat(0, 0);
-    }
+    //         if (ros::Time::now() > track.object.redetection_time) {
+    //             // detect
+    //         } else {
+    //             if (track.object.type == ObjectType::None) {
+    //                 continue;
+    //             }
+
+    //             // track
+    //         }
+    //     }
+    // }
 
     std::tuple<ObjectType, Eigen::Isometry3d, double> detect_object_from_scratch(
-        open3d::geometry::PointCloud& cluster) {
-        using namespace open3d::pipelines::registration;
-
-        cluster.EstimateNormals();
-        auto cluster_features = *ComputeFPFHFeature(cluster);
-
-        RANSACConvergenceCriteria criteria(10000, 1.0);
-        FastGlobalRegistrationOption options(1.4, true, true, 0.5, 64, 0.95, 1000, true);
-        auto loss = std::make_shared<TukeyLoss>(0.5);
-        TransformationEstimationPointToPlane estimation(loss);
-
-        RegistrationResult best_result;
-        best_result.fitness_ = -std::numeric_limits<double>::infinity();
-        ObjectType best_type;
-
-        assert(!object_types_.empty());
-
-        for (const auto& [type, data]: object_types_) {
-            try {
-                // auto result = RegistrationRANSACBasedOnFeatureMatching(cluster, data.point_cloud, cluster_features, data.features,
-                // false, 0.05, TransformationEstimationPointToPlane(), 4, {}, criteria
-                // );
-                auto result = FastGlobalRegistrationBasedOnFeatureMatching(
-                    data.point_cloud, data.point_cloud, cluster_features, data.features, FastGlobalRegistrationOption()
-                );
-
-                // auto icp_result = RegistrationICP(cluster, data.point_cloud, 0.01,
-                // result.transformation_, TransformationEstimationPointToPlane());
-                auto icp_result = result;
-
-                ROS_INFO("RANSAC fitness %f", result.fitness_);
-                ROS_INFO("ICP fitness %f", icp_result.fitness_);
-
-                if (icp_result.IsBetterRANSACThan(best_result)) {
-                    best_result = icp_result;
-                    best_type = type;
-                }
-            } catch (...) {
-                ROS_WARN("Failed to run object registration.");
-            }
-        }
-
-        Eigen::Isometry3d transform(best_result.transformation_);
-        Eigen::Isometry3d pose(transform.inverse());
-
-        return {best_type, pose, best_result.fitness_};
+        pcl::PointCloud<pcl::PointXYZRGB>& cluster) {
+        
     }
 
-    std::vector<open3d::geometry::PointCloud> cluster_cloud(
-        const open3d::geometry::PointCloud& cloud, double dbscan_eps, size_t dbscan_min_pts) {
-        std::vector<int> cluster_labels = cloud.ClusterDBSCAN(dbscan_eps, dbscan_min_pts);
+    std::vector<pcl::PointCloud<pcl::PointXYZHSV>> cluster_cloud(pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cloud) {
+        pcl::ConditionalEuclideanClustering<pcl::PointXYZHSV> reg;
+        pcl::search::Search<pcl::PointXYZHSV>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZHSV>);
+        pcl::IndicesPtr indices(new std::vector<int>);
 
-        std::map<int, std::vector<size_t>> cluster_indices;
-        for (size_t i = 0; i < cloud.points_.size(); ++i) {
-            int label = cluster_labels[i];
-            if (label != -1) {  // Ignore noise points (-1)
-                cluster_indices[label].push_back(i);
+        pcl::removeNaNFromPointCloud(*cloud, *indices);
+
+        auto condition_func = [](const pcl::PointXYZHSV &first, const pcl::PointXYZHSV &second, float squared_dist) {
+            double hue_dist = 0.0;
+            if (std::abs(second.h - first.h) > 180) {
+                hue_dist = 360 - std::abs(second.h - first.h);
+            } else {
+                hue_dist = std::abs(second.h - first.h);
+            }
+            assert(hue_dist <= 180.0);
+
+            double sat_dist = std::abs(second.s - first.s);
+            double val_dist = std::abs(second.v - first.v);
+
+            return hue_dist < 10 && sat_dist < 0.1 && val_dist < 0.1;
+        };
+
+        reg.setInputCloud(cloud);
+        reg.setIndices(indices);
+        reg.setSearchMethod(tree);
+        reg.setConditionFunction(std::function(condition_func));
+        reg.setMinClusterSize(200);
+        reg.setClusterTolerance(0.02);
+      
+        std::vector<pcl::PointIndices> point_indices;
+        reg.segment(point_indices);
+
+        std::vector<pcl::PointCloud<pcl::PointXYZHSV>> clusters(point_indices.size());
+        for (size_t i = 0; i < point_indices.size(); i++) {
+            clusters[i].reserve(point_indices[i].indices.size());
+            for (auto point_idx : point_indices[i].indices) {
+                clusters[i].push_back(cloud->points[point_idx]);
             }
         }
 
-        // Create a PointCloud for each cluster
-        std::vector<open3d::geometry::PointCloud> cluster_clouds;
-        cluster_clouds.reserve(cluster_indices.size());  // Reserve space
-
-        for (const auto& pair: cluster_indices) {
-            int label = pair.first;
-            const std::vector<size_t>& indices = pair.second;
-
-            open3d::geometry::PointCloud cluster_cloud;
-            cluster_cloud.points_.reserve(indices.size());
-            if (cloud.HasColors()) {
-                cluster_cloud.colors_.reserve(indices.size());
-            }
-
-            for (size_t index: indices) {
-                cluster_cloud.points_.push_back(cloud.points_[index]);
-                if (cloud.HasColors()) {
-                    cluster_cloud.colors_.push_back(cloud.colors_[index]);
-                }
-            }
-
-            const auto &[removed, _] = cluster_cloud.RemoveStatisticalOutliers(30, 2.0);
-            cluster_cloud = *removed;
-            
-            if (cluster_cloud.points_.size() < 200)
-                continue;
-
-            // auto bbox = cluster_cloud.GetMinimalOrientedBoundingBox();
-            // if (bbox.extent_.x() <= 0.02 || bbox.extent_.y() <= 0.02 || bbox.extent_.z() <= 0.02)
-            //     continue;
-
-            cluster_clouds.push_back(cluster_cloud);
-        }
-
-        return cluster_clouds;
+        return clusters;
     }
 
     std::optional<sensor_msgs::PointCloud2> transform_point_cloud(

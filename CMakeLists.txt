@@ -24,6 +24,10 @@ find_package(catkin REQUIRED COMPONENTS
 # find_package(Boost REQUIRED COMPONENTS system)
 find_package(Open3D REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(PCL REQUIRED)
+
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
 
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
@@ -128,6 +132,7 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
   ${Open3D_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
 )
 
 ## Declare a C++ library
@@ -168,6 +173,7 @@ target_link_libraries(object_reg
   ${catkin_LIBRARIES}
   ${Open3D_LIBRARIES}
   ${OpenCV_LIBS}
+  ${PCL_LIBRARIES}
 )
 
 target_link_libraries(filter_cloud
