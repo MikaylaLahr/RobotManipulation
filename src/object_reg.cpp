@@ -227,45 +227,58 @@ private:
             hsv_means[i] = compute_cluster_mean(clusters[i]);
         }
 
-        std::vector<pcl::PointXYZHSV> hsv_track_means(tracks_.size());
-        for (size_t i = 0; i < tracks_.size(); i++) {
-            hsv_track_means[i] = tracks_[i].mean;
+        std::vector<int> track_matches(tracks_.size(), -1);
+        std::vector<bool> clusters_taken(clusters.size(), false);
+        
+        for (size_t j = 0; j < tracks_.size(); j++) {
+            const auto &track = tracks_[j];
+            Eigen::Vector3d track_center(track.mean.x, track.mean.y, track.mean.z);
+
+            int best_cluster = -1;
+
+            for (size_t i = 0; i < clusters.size(); i++) {
+                if (clusters_taken[i]) {
+                    continue;
+                }
+
+                Eigen::Vector3d cluster_center(hsv_means[i].x, hsv_means[i].y, hsv_means[i].z);
+
+                if ((track_center - cluster_center).norm() > 0.05) {
+                    continue;
+                }
+
+                double hue_dist = 0;
+                if (std::abs(track.mean.h - hsv_means[i].h) > 180) {
+                    hue_dist = 360 - std::abs(track.mean.h - hsv_means[i].h);
+                } else {
+                    hue_dist = std::abs(track.mean.h - hsv_means[i].h);
+                }
+
+                if (hue_dist > 30) {
+                    continue;
+                }
+
+                if (best_cluster == -1) {
+                    best_cluster = i;
+                    clusters_taken[i] = true;
+                    continue;
+                }
+
+                Eigen::Vector3d other_cluster_center(hsv_means[best_cluster].x, hsv_means[best_cluster].y, hsv_means[best_cluster].z);
+                if ((track_center - cluster_center).norm() < (track_center - other_cluster_center).norm()) {
+                    best_cluster = i;
+                    clusters_taken[i] = true;
+                }   
+            }
+
+            track_matches[j] = best_cluster;
         }
 
-        std::vector<int> track_matches = gale_shapley<pcl::PointXYZHSV, pcl::PointXYZHSV>(
-            hsv_track_means, hsv_means, [&](const pcl::PointXYZHSV& track, const pcl::PointXYZHSV& cluster) {
-                // double hue_dist = 0.0;
-                // if (std::abs(cluster.h - track.h) > 180) {
-                //     hue_dist = 360 - std::abs(cluster.h - track.h);
-                // } else {
-                //     hue_dist = std::abs(cluster.h - track.h);
-                // }
-                // assert(hue_dist <= 180.0);
-
-                // double sat_dist = std::abs(cluster.s - track.s);
-                // double val_dist = std::abs(cluster.v - track.v);
-
-                // Eigen::Vector3d cluster_center(cluster.x, cluster.y, cluster.z);
-                // Eigen::Vector3d track_center(track.x, track.y, track.z);
-                // double physical_dist = (cluster_center - track_center).norm();
-
-                // double sat_threshold = 0.1;
-                // double val_threshold = 0.1;
-                // if (cluster.v > val_threshold && track.v > val_threshold && cluster.s > sat_threshold && track.s > sat_threshold) {
-                //     return std::pow((cluster_center - track_center).norm(), 3) + 0.0025 * hue_dist + 0.2 * sat_dist + 0.2 * val_dist;
-                // } else {
-                //     return std::pow((cluster_center - track_center).norm(), 3) + 0.2 * sat_dist + 0.2 * val_dist;
-                // }
-            });
-
-        std::vector<bool> found_clusters(clusters.size(), false);
-        
         for (size_t i = 0; i < track_matches.size(); i++) {
             auto &track = tracks_[i];
 
             if (track_matches[i] != -1) {
                 const auto &cluster = clusters[track_matches[i]];
-                found_clusters[track_matches[i]] = true;
                 track.active = true;
                 track.last_detected = detection_time;
                 track.mean = compute_cluster_mean(cluster);
@@ -276,7 +289,7 @@ private:
         }
 
         for (size_t i = 0; i < clusters.size(); i++) {
-            if (!found_clusters[i]) {
+            if (!clusters_taken[i]) {
                 ClusterTrack track;
                 track.id = next_id++;
                 track.active = true;
@@ -386,7 +399,11 @@ private:
             double sat_dist = std::abs(second.s - first.s);
             double val_dist = std::abs(second.v - first.v);
 
-            return hue_dist < 10 && sat_dist < 0.1 && val_dist < 0.1;
+            if (first.s > 0.1 && second.s > 0.1 && first.v > 0.1 && second.v > 0.1) {
+                return hue_dist < 5 && sat_dist < 0.05 && val_dist < 0.05;
+            } else {
+                return sat_dist < 0.1 && val_dist < 0.1;
+            }
         };
 
         reg.setInputCloud(cloud);
