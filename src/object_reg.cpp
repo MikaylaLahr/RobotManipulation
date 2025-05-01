@@ -24,6 +24,8 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/recognition/cg/geometric_consistency.h>
 #include <pcl/recognition/cg/hough_3d.h>
+#include <pcl/registration/icp.h>
+#include <pcl/features/moment_of_inertia_estimation.h>
 #include <ros/ros.h>
 #include <rviz_visual_tools/rviz_visual_tools.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -453,105 +455,72 @@ private:
 
         const ObjectTypeInfo& wine = object_types_[ObjectType::Wine];
 
-        pcl::NormalEstimationOMP<pcl::PointXYZ, pcl::Normal> norm_est;
-        norm_est.setKSearch(10);
+        pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+        icp.setInputSource(wine.point_cloud);
+        icp.setInputTarget(xyz_cluster);
 
-        pcl::SHOTEstimationOMP<pcl::PointXYZ, pcl::Normal, pcl::SHOT352> descr_est;
-        descr_est.setRadiusSearch(0.02);
+        icp.setMaxCorrespondenceDistance(0.02);
+        icp.setMaximumIterations(30);
+        icp.setTransformationEpsilon(1e-8);
+        icp.setEuclideanFitnessEpsilon(1);
 
-        pcl::UniformSampling<pcl::PointXYZ> uniform_sampling;
+        pcl::MomentOfInertiaEstimation<pcl::PointXYZ> feature_extractor;
+        feature_extractor.setInputCloud(xyz_cluster);
+        feature_extractor.compute();
 
-        pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>());
-        norm_est.setInputCloud(xyz_cluster);
-        norm_est.compute(*normals);
+        pcl::PointXYZ dummy;
+        Eigen::Matrix3f dummy2;
 
-        pcl::PointCloud<pcl::PointXYZ>::Ptr keypoints(new pcl::PointCloud<pcl::PointXYZ>());
-        uniform_sampling.setInputCloud(xyz_cluster);
-        uniform_sampling.setRadiusSearch(0.03);
-        uniform_sampling.filter(*keypoints);
+        Eigen::Vector3f major;
+        Eigen::Vector3f middle;
+        Eigen::Vector3f minor;
+        pcl::PointXYZ center;
+        feature_extractor.getEigenVectors(major, middle, minor);
+        feature_extractor.getOBB(dummy, dummy, center, dummy2);
 
-        pcl::PointCloud<pcl::SHOT352>::Ptr descriptors(new pcl::PointCloud<pcl::SHOT352>());
-        descr_est.setInputCloud(keypoints);
-        descr_est.setInputNormals(normals);
-        descr_est.setSearchSurface(xyz_cluster);
-        descr_est.compute(*descriptors);
+        feature_extractor.setInputCloud(wine.point_cloud);
+        feature_extractor.compute();
 
-        //
-        //  Find Model-Scene Correspondences with KdTree
-        //
-        pcl::CorrespondencesPtr corrs(new pcl::Correspondences());
+        Eigen::Vector3f major_model;
+        Eigen::Vector3f middle_model;
+        Eigen::Vector3f minor_model;
+        pcl::PointXYZ center_model;
+        feature_extractor.getEigenVectors(major_model, middle_model, minor_model);
+        feature_extractor.getOBB(dummy, dummy, center_model, dummy2);
 
-        pcl::KdTreeFLANN<pcl::SHOT352> match_search;
-        match_search.setInputCloud(wine.descriptors);
+        float best_fitness = -std::numeric_limits<float>::infinity();
+        Eigen::Matrix4f best_transform = Eigen::Matrix4f::Identity();
 
-        //  For each scene keypoint descriptor, find nearest neighbor into the
-        //  model keypoints descriptor cloud and add it to the correspondences
-        //  vector.
-        for (std::size_t i = 0; i < descriptors->size(); ++i) {
-            std::vector<int> neigh_indices(1);
-            std::vector<float> neigh_sqr_dists(1);
-            if (!std::isfinite(descriptors->at(i).descriptor[0]))  // skipping NaNs
-            {
-                continue;
-            }
+        for (size_t config = 0; config < 1; config++) {
+            bool negate_major = config & 0b100;
+            bool negate_middle = config & 0b010;
+            bool negate_minor = config & 0b001;
 
-            int found_neighs = match_search.nearestKSearch(
-                descriptors->at(i), 1, neigh_indices, neigh_sqr_dists);
-            if (found_neighs == 1 && neigh_sqr_dists[0] < 0.25f) {
-                pcl::Correspondence corr(neigh_indices[0], static_cast<int>(i), neigh_sqr_dists[0]);
-                corrs->push_back(corr);
+            int major_mult = negate_major ? -1 : 1;
+            int middle_mult = negate_middle ? -1 : 1;
+            int minor_mult = negate_minor ? -1 : 1;
+
+            Eigen::Matrix3f a;
+            a << major_mult * major, middle_mult * middle, minor_mult * minor;
+
+            Eigen::Matrix3f b;
+            b << major_model, middle_model, minor_model;
+
+            Eigen::Isometry3f guess;
+            guess.linear() = a * b.transpose();
+            guess.translation() = center.getVector3fMap() - center_model.getVector3fMap();
+
+            pcl::PointCloud<pcl::PointXYZ> cloud_source_registered;
+            icp.align(cloud_source_registered, guess.matrix());
+
+            float fitness = icp.getFitnessScore(0.005);
+            if (fitness > best_fitness) {
+                best_fitness = fitness;
+                best_transform = icp.getFinalTransformation();
             }
         }
 
-        //
-        //  Actual Clustering
-        //
-        std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> rototranslations;
-        std::vector<pcl::Correspondences> clustered_corrs;
-
-        pcl::PointCloud<pcl::ReferenceFrame>::Ptr model_rf(
-            new pcl::PointCloud<pcl::ReferenceFrame>());
-        pcl::PointCloud<pcl::ReferenceFrame>::Ptr scene_rf(
-            new pcl::PointCloud<pcl::ReferenceFrame>());
-
-        pcl::BOARDLocalReferenceFrameEstimation<pcl::PointXYZ, pcl::Normal, pcl::ReferenceFrame>
-            rf_est;
-        rf_est.setFindHoles(true);
-        rf_est.setRadiusSearch(0.015);
-
-        rf_est.setInputCloud(wine.keypoints);
-        rf_est.setInputNormals(wine.normals);
-        rf_est.setSearchSurface(wine.point_cloud);
-        rf_est.compute(*model_rf);
-
-        rf_est.setInputCloud(keypoints);
-        rf_est.setInputNormals(normals);
-        rf_est.setSearchSurface(xyz_cluster);
-        rf_est.compute(*scene_rf);
-
-        //  Clustering
-        pcl::Hough3DGrouping<pcl::PointXYZ, pcl::PointXYZ, pcl::ReferenceFrame, pcl::ReferenceFrame>
-            clusterer;
-        clusterer.setHoughBinSize(0.01);
-        clusterer.setHoughThreshold(5.0);
-        clusterer.setUseInterpolation(true);
-        clusterer.setUseDistanceWeight(false);
-
-        clusterer.setInputCloud(wine.keypoints);
-        clusterer.setInputRf(model_rf);
-        clusterer.setSceneCloud(keypoints);
-        clusterer.setSceneRf(scene_rf);
-        clusterer.setModelSceneCorrespondences(corrs);
-
-        clusterer.recognize(rototranslations, clustered_corrs);
-
-        Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
-        if (!rototranslations.empty()) {
-            ROS_WARN("No objects found!");
-            pose = Eigen::Isometry3d(rototranslations.front().cast<double>());
-        }
-
-        return {ObjectType::Wine, pose, 1.0};
+        return {ObjectType::Wine, Eigen::Isometry3d(best_transform.cast<double>()), 1.0};
     }
 
     std::vector<pcl::PointCloud<pcl::PointXYZHSV>> cluster_cloud(
