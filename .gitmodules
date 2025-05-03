@@ -1,0 +1,3 @@
+[submodule "external/gpd"]
+	path = external/gpd
+	url = https://github.com/atenpas/gpd

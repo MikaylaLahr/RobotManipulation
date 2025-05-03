@@ -1,0 +1,37 @@
+<launch>
+  <arg name="use_sim" default="true" />
+  
+  <node name="filter_cloud_node" pkg="robot_manipulation" type="filter_cloud" output="screen">
+    <remap from="/point_cloud_1" to="/camera/depth/color/points" />
+    <remap from="/point_cloud_2" to="/camera1/depth/color/points" />
+    <remap from="/filtered_point_cloud" to="/filter_cloud/filtered" />
+    <!-- Parameters for cropping -->
+    <param name="crop_min_x" type="double" value="0.0" />
+    <param name="crop_min_y" type="double" value="-0.17" />
+    <param name="crop_min_z" type="double" value="0.0" />
+    <param name="crop_max_x" type="double" value="0.5" />
+    <param name="crop_max_y" type="double" value="0.19" />
+    <param name="crop_max_z" type="double" value="0.15" />
+    <!-- Parameter for downsampling -->
+    <param name="voxel_size" type="double" value="0.003" />
+    <!-- Parameter for target frame -->
+    <param name="base_link_frame" type="str" value="wx250s/base_link" />
+  </node>
+
+  <node name="grasp_gen_service" pkg="robot_manipulation" type="grasp_gen" output="screen">
+    <param name="config_file" type="str" value="$(find robot_manipulation)/resources/ros_grasp.cfg" />
+  </node>
+
+  <node name="test_grasp_gen" pkg="robot_manipulation" type="test_grasp_gen.py" output="screen">
+    <param name="stl_file" type="str" value="$(find robot_manipulation)/resources/meshes/wine.stl" />
+    <param name="num_points" type="int" value="5000" />
+    <param name="service_name" type="str" value="/grasp_gen_service/generate_grasp_candidates" />
+  </node>
+
+  <!-- Launch the base functionality -->
+  <include file="$(find robot_manipulation)/launch/base.launch">
+    <arg name="use_rviz" value="true" />
+    <arg name="use_sim" value="$(arg use_sim)" />
+    <arg name="dual_camera" value="true" />
+  </include>
+</launch>

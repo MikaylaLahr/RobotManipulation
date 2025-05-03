@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(robot_manipulation)
 
-## Compile as C++11, supported in ROS Kinetic and newer
-add_compile_options(-std=c++11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_CXX_FLAGS "-O3 -march=native -mtune=intel -msse4.2 -mavx2 -mfma -flto -fopenmp -fPIC -Wno-deprecated -Wenum-compare -Wno-ignored-attributes -std=c++17")
+add_link_options(-fopenmp)
 # add_compile_options(-std=c++11 -fsanitize=address,undefined)
 # add_link_options(-fsanitize=address,undefined)
 
@@ -18,6 +22,10 @@ find_package(catkin REQUIRED COMPONENTS
   rviz_visual_tools
   message_filters
   open3d_conversions
+  geometry_msgs
+  message_generation
+  tf2_eigen
+  tf2_geometry_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -25,6 +33,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(Open3D REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(PCL REQUIRED)
+add_subdirectory(external/gpd EXCLUDE_FROM_ALL)
 
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
@@ -59,18 +68,17 @@ add_definitions(${PCL_DEFINITIONS})
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
+add_message_files(
+  FILES
+  GraspCandidate.msg
+  GraspCandidates.msg
+)
 
 ## Generate services in the 'srv' folder
-# add_service_files(
-#   FILES
-#   Service1.srv
-#   Service2.srv
-# )
+add_service_files(
+  FILES
+  GenerateGraspCandidates.srv
+)
 
 ## Generate actions in the 'action' folder
 # add_action_files(
@@ -80,10 +88,12 @@ add_definitions(${PCL_DEFINITIONS})
 # )
 
 ## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   std_msgs  # Or other packages containing msgs
-# )
+generate_messages(
+  DEPENDENCIES
+  std_msgs  # Or other packages containing msgs
+  geometry_msgs
+  sensor_msgs
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -117,7 +127,7 @@ add_definitions(${PCL_DEFINITIONS})
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES robot_manipulation
-#  CATKIN_DEPENDS rospy
+ CATKIN_DEPENDS message_runtime std_msgs geometry_msgs sensor_msgs
 #  DEPENDS system_lib
 )
 
@@ -129,6 +139,7 @@ catkin_package(
 ## Your package locations should be listed before other locations
 include_directories(
   include
+  external/gpd/include
   ${catkin_INCLUDE_DIRS}
   ${Open3D_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
@@ -151,6 +162,9 @@ include_directories(
 add_executable(box_detector src/box_detector.cpp)
 add_executable(object_reg src/object_reg.cpp)
 add_executable(filter_cloud src/filter_cloud.cpp)
+add_executable(grasp_gen src/grasp_gen.cpp)
+
+add_dependencies(grasp_gen robot_manipulation_generate_messages_cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -179,6 +193,13 @@ target_link_libraries(object_reg
 target_link_libraries(filter_cloud
   ${catkin_LIBRARIES}
   ${Open3D_LIBRARIES}
+)
+
+target_link_libraries(grasp_gen
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBS}
+  gpd_grasp_detector
 )
 
 #############
