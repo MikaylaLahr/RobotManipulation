@@ -25,6 +25,7 @@
 #include <pcl/recognition/cg/geometric_consistency.h>
 #include <pcl/recognition/cg/hough_3d.h>
 #include <pcl/registration/icp.h>
+#include <pcl/registration/icp_nl.h>
 #include <pcl/features/moment_of_inertia_estimation.h>
 #include <ros/ros.h>
 #include <rviz_visual_tools/rviz_visual_tools.h>
@@ -50,6 +51,7 @@
 
 #include "geometry_msgs/Vector3.h"
 #include "gs_matching.h"
+#include "open3d_conversions/open3d_conversions.h"
 #include "ros/duration.h"
 #include "ros/time.h"
 #include "std_msgs/ColorRGBA.h"
@@ -92,7 +94,7 @@ public:
 
         read_meshes();
 
-        ROS_INFO("Box detector node initialized.");
+        ROS_INFO("Object registration node initialized.");
         ROS_INFO("Using frame %s as base link.", base_link_frame_.c_str());
         ROS_INFO("Found %zu object meshes.", object_types_.size());
     }
@@ -110,10 +112,8 @@ private:
             return;
         }
 
-        pcl::PCLPointCloud2 pc2;
-        pcl_conversions::toPCL(*transformed_opt, pc2);
         pcl::PointCloud<pcl::PointXYZRGB> pcl_cloud;
-        pcl::fromPCLPointCloud2(pc2, pcl_cloud);
+        pcl::fromROSMsg(*cloud_msg, pcl_cloud);
 
         pcl::PointCloud<pcl::PointXYZHSV> hsv;
         pcl::PointCloudXYZRGBtoXYZHSV(pcl_cloud, hsv);
@@ -131,14 +131,9 @@ private:
         std::string mesh_folder;
         nh_.getParam("mesh_folder", mesh_folder);
 
-        std::unordered_map<std::string, ObjectType> name_type_map{
-            // {"cube", ObjectType::Cube},
-            // {"milk", ObjectType::Milk},
-            {"wine", ObjectType::Wine},
-            // {"eggs", ObjectType::Eggs},
-            // {"toilet_paper", ObjectType::ToiletPaper},
-            // {"can", ObjectType::Can}
-        };
+        std::unordered_map<std::string, ObjectType> name_type_map{{"cube", ObjectType::Cube},
+            {"milk", ObjectType::Milk}, {"wine", ObjectType::Wine}, {"eggs", ObjectType::Eggs},
+            {"toilet_paper", ObjectType::ToiletPaper}, {"can", ObjectType::Can}};
 
         open3d::io::ReadTriangleMeshOptions options;
         options.enable_post_processing = false;
@@ -415,7 +410,7 @@ private:
     }
 
     void update_objects() {
-        double fitness_threshold = -0.1;
+        double fitness_threshold = 0.7;
 
         for (auto& track: tracks_) {
             if (!track.active) {
@@ -453,79 +448,78 @@ private:
             xyz_cluster->emplace_back(point.x, point.y, point.z);
         }
 
-        const ObjectTypeInfo& wine = object_types_[ObjectType::Wine];
+        sensor_msgs::PointCloud2::Ptr cluster_pc_ros(new sensor_msgs::PointCloud2);
+        pcl::toROSMsg(*xyz_cluster, *cluster_pc_ros);
+        open3d::geometry::PointCloud cluster_pc_o3d;
+        open3d_conversions::rosToOpen3d(cluster_pc_ros, cluster_pc_o3d);
 
-        pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
-        icp.setInputSource(wine.point_cloud);
-        icp.setInputTarget(xyz_cluster);
+        using namespace open3d::pipelines::registration;
 
-        icp.setMaxCorrespondenceDistance(0.02);
-        icp.setMaximumIterations(30);
-        icp.setTransformationEpsilon(1e-8);
-        icp.setEuclideanFitnessEpsilon(1);
+        cluster_pc_o3d.EstimateNormals();
+        auto cluster_features = *ComputeFPFHFeature(cluster_pc_o3d);
+        open3d::geometry::OrientedBoundingBox cluster_bb =
+            cluster_pc_o3d.GetMinimalOrientedBoundingBox();
 
-        pcl::MomentOfInertiaEstimation<pcl::PointXYZ> feature_extractor;
-        feature_extractor.setInputCloud(xyz_cluster);
-        feature_extractor.compute();
+        RANSACConvergenceCriteria criteria(10000, 1.0);
+        RegistrationResult best_result;
+        best_result.transformation_ = Eigen::Matrix4d::Identity();
+        best_result.fitness_ = -std::numeric_limits<double>::infinity();
+        ObjectType best_type = ObjectType::None;
 
-        pcl::PointXYZ dummy;
-        Eigen::Matrix3f dummy2;
+        for (const auto& [type, data]: object_types_) {
+            try {
+                sensor_msgs::PointCloud2::Ptr object_pc_ros(new sensor_msgs::PointCloud2);
+                pcl::toROSMsg(*data.point_cloud, *object_pc_ros);
+                open3d::geometry::PointCloud object_pc_o3d;
+                open3d_conversions::rosToOpen3d(object_pc_ros, object_pc_o3d);
 
-        Eigen::Vector3f major;
-        Eigen::Vector3f middle;
-        Eigen::Vector3f minor;
-        pcl::PointXYZ center;
-        feature_extractor.getEigenVectors(major, middle, minor);
-        feature_extractor.getOBB(dummy, dummy, center, dummy2);
+                open3d::geometry::OrientedBoundingBox object_bb =
+                    object_pc_o3d.GetMinimalOrientedBoundingBox();
 
-        feature_extractor.setInputCloud(wine.point_cloud);
-        feature_extractor.compute();
+                double volume_ratio = object_bb.Volume() / cluster_bb.Volume();
+                if (volume_ratio > 1.3 || volume_ratio < 0.7) {
+                    continue;
+                }
 
-        Eigen::Vector3f major_model;
-        Eigen::Vector3f middle_model;
-        Eigen::Vector3f minor_model;
-        pcl::PointXYZ center_model;
-        feature_extractor.getEigenVectors(major_model, middle_model, minor_model);
-        feature_extractor.getOBB(dummy, dummy, center_model, dummy2);
+                std::vector<double> cluster_extent{
+                    cluster_bb.extent_.x(), cluster_bb.extent_.y(), cluster_bb.extent_.z()};
+                std::sort(cluster_extent.begin(), cluster_extent.end());
+                std::vector<double> object_extent{
+                    object_bb.extent_.x(), object_bb.extent_.y(), object_bb.extent_.z()};
+                std::sort(object_extent.begin(), object_extent.end());
 
-        float best_fitness = -std::numeric_limits<float>::infinity();
-        Eigen::Matrix4f best_transform = Eigen::Matrix4f::Identity();
+                double ratio = cluster_extent[2] / object_extent[2];
+                if (ratio > 1.3 || ratio < 0.7) {
+                    continue;
+                }
 
-        for (size_t config = 0; config < 1; config++) {
-            bool negate_major = config & 0b100;
-            bool negate_middle = config & 0b010;
-            bool negate_minor = config & 0b001;
+                object_pc_o3d.EstimateNormals();
+                auto object_features = *ComputeFPFHFeature(object_pc_o3d);
 
-            int major_mult = negate_major ? -1 : 1;
-            int middle_mult = negate_middle ? -1 : 1;
-            int minor_mult = negate_minor ? -1 : 1;
+                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster_pc_o3d,
+                    object_pc_o3d, cluster_features, object_features,
+                    FastGlobalRegistrationOption());
 
-            Eigen::Matrix3f a;
-            a << major_mult * major, middle_mult * middle, minor_mult * minor;
+                auto icp_result = RegistrationICP(cluster_pc_o3d, object_pc_o3d, 0.01,
+                    result.transformation_, TransformationEstimationPointToPlane());
 
-            Eigen::Matrix3f b;
-            b << major_model, middle_model, minor_model;
-
-            Eigen::Isometry3f guess;
-            guess.linear() = a * b.transpose();
-            guess.translation() = center.getVector3fMap() - center_model.getVector3fMap();
-
-            pcl::PointCloud<pcl::PointXYZ> cloud_source_registered;
-            icp.align(cloud_source_registered, guess.matrix());
-
-            float fitness = icp.getFitnessScore(0.005);
-            if (fitness > best_fitness) {
-                best_fitness = fitness;
-                best_transform = icp.getFinalTransformation();
+                if (icp_result.IsBetterRANSACThan(best_result)) {
+                    best_result = icp_result;
+                    best_type = type;
+                }
+            } catch (...) {
             }
         }
 
-        return {ObjectType::Wine, Eigen::Isometry3d(best_transform.cast<double>()), 1.0};
+        Eigen::Isometry3d transform(best_result.transformation_);
+        Eigen::Isometry3d pose(transform.inverse());
+
+        return {best_type, pose, best_result.fitness_};
     }
 
     std::vector<pcl::PointCloud<pcl::PointXYZHSV>> cluster_cloud(
         pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cloud) {
-        pcl::ConditionalEuclideanClustering<pcl::PointXYZHSV> reg;
+        pcl::ConditionalEuclideanClustering<pcl::PointXYZHSV> clustering;
         pcl::search::Search<pcl::PointXYZHSV>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZHSV>);
         pcl::IndicesPtr indices(new std::vector<int>);
 
@@ -551,15 +545,15 @@ private:
             }
         };
 
-        reg.setInputCloud(cloud);
-        reg.setIndices(indices);
-        reg.setSearchMethod(tree);
-        reg.setConditionFunction(std::function(condition_func));
-        reg.setMinClusterSize(200);
-        reg.setClusterTolerance(0.02);
+        clustering.setInputCloud(cloud);
+        clustering.setIndices(indices);
+        clustering.setSearchMethod(tree);
+        clustering.setConditionFunction(std::function(condition_func));
+        clustering.setMinClusterSize(200);
+        clustering.setClusterTolerance(0.02);
 
         std::vector<pcl::PointIndices> point_indices;
-        reg.segment(point_indices);
+        clustering.segment(point_indices);
 
         std::vector<pcl::PointCloud<pcl::PointXYZHSV>> clusters(point_indices.size());
         for (size_t i = 0; i < point_indices.size(); i++) {

@@ -5,10 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_CXX_FLAGS "-O3 -march=native -mtune=intel -msse4.2 -mavx2 -mfma -flto -fopenmp -fPIC -Wno-deprecated -Wenum-compare -Wno-ignored-attributes -std=c++17")
-add_link_options(-fopenmp)
+# set(CMAKE_CXX_FLAGS "-O3 -march=native -mtune=intel -msse4.2 -mavx2 -mfma -flto -fopenmp -fPIC -Wno-deprecated -Wenum-compare -Wno-ignored-attributes -std=c++17")
+# add_link_options(-fopenmp)
 # add_compile_options(-std=c++11 -fsanitize=address,undefined)
 # add_link_options(-fsanitize=address,undefined)
+add_compile_options(-std=c++17)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
@@ -162,9 +163,9 @@ include_directories(
 add_executable(box_detector src/box_detector.cpp)
 add_executable(object_reg src/object_reg.cpp)
 add_executable(filter_cloud src/filter_cloud.cpp)
-add_executable(grasp_gen src/grasp_gen.cpp)
+# add_executable(grasp_gen src/grasp_gen.cpp)
 
-add_dependencies(grasp_gen robot_manipulation_generate_messages_cpp)
+# add_dependencies(grasp_gen robot_manipulation_generate_messages_cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -195,12 +196,12 @@ target_link_libraries(filter_cloud
   ${Open3D_LIBRARIES}
 )
 
-target_link_libraries(grasp_gen
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
-  ${OpenCV_LIBS}
-  gpd_grasp_detector
-)
+# target_link_libraries(grasp_gen
+#   ${catkin_LIBRARIES}
+#   ${PCL_LIBRARIES}
+#   ${OpenCV_LIBS}
+#   gpd_grasp_detector
+# )
 
 #############
 ## Install ##
