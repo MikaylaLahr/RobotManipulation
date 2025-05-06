@@ -79,6 +79,7 @@ add_message_files(
 add_service_files(
   FILES
   GenerateGraspCandidates.srv
+  ActivePerception.srv
 )
 
 ## Generate actions in the 'action' folder
@@ -164,6 +165,7 @@ add_executable(box_detector src/box_detector.cpp)
 add_executable(object_reg src/object_reg.cpp)
 add_executable(filter_cloud src/filter_cloud.cpp)
 # add_executable(grasp_gen src/grasp_gen.cpp)
+add_executable(active_perception_service src/active_perception_service.cpp)
 
 # add_dependencies(grasp_gen robot_manipulation_generate_messages_cpp)
 
@@ -202,6 +204,11 @@ target_link_libraries(filter_cloud
 #   ${OpenCV_LIBS}
 #   gpd_grasp_detector
 # )
+
+target_link_libraries(active_perception_service
+  ${catkin_LIBRARIES}
+  ${Open3D_LIBRARIES}
+)
 
 #############
 ## Install ##
