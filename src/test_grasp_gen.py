@@ -222,6 +222,12 @@ def main():
         moveit.move_group.stop()
 
         moveit.move_group.set_start_state(moveit.robot.get_current_state())
+
+        #symmetries should likely be accoutned for here by iterating through plans 
+        #and picking shortest successful plan time. Need object classification to do so
+
+        
+
         success_final, final_plan, plan_time, code = moveit.move_group.plan(pose_global_ros)
         if not success_final:
             print("doom")

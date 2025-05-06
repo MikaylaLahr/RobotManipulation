@@ -88,8 +88,8 @@ public:
 
         open3d::geometry::PointCloud o3d_cloud_1 = convert_cloud_ros_to_open3d(transformed_1);
         open3d::geometry::PointCloud o3d_cloud_2 = convert_cloud_ros_to_open3d(transformed_2);
-        
-        open3d::geometry::PointCloud o3d_cloud = o3d_cloud_1 + o3d_cloud_2;
+
+        open3d::geometry::PointCloud o3d_cloud = o3d_cloud_2;
 
         open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(
             open3d::geometry::AxisAlignedBoundingBox(
@@ -98,9 +98,12 @@ public:
         open3d::geometry::PointCloud downsampled = *cropped.VoxelDownSample(
             voxel_size_);  // Downsample the cropped cloud
 
+        pc_so_far += downsampled;
+        pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
+
         // Publish the downsampled (and cropped) cloud
         sensor_msgs::PointCloud2 filtered_msg = convert_cloud_open3d_to_ros(
-            downsampled, transformed_1.header);
+            pc_so_far, transformed_1.header);
         filtered_pub_.publish(filtered_msg);
     }
 
@@ -282,6 +285,8 @@ private:
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
     std::string base_link_frame_;
+
+    open3d::geometry::PointCloud pc_so_far;
 
     // Parameters
     double crop_min_x_, crop_min_y_, crop_min_z_;

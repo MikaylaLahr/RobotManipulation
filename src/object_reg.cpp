@@ -102,7 +102,7 @@ public:
 private:
     // Callback function for processing incoming PointCloud2 messages
     void point_cloud_callback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg) {
-        ROS_DEBUG("Received PointCloud2 message (%dx%d points) in frame '%s'.", cloud_msg->width,
+        ROS_INFO("Received PointCloud2 message (%dx%d points) in frame '%s'.", cloud_msg->width,
             cloud_msg->height, cloud_msg->header.frame_id.c_str());
 
         visual_tools_->deleteAllMarkers();
@@ -269,6 +269,8 @@ private:
 
     void update_tracks(
         std::vector<pcl::PointCloud<pcl::PointXYZHSV>> clusters, ros::Time detection_time) {
+        ROS_INFO("Updating tracks");
+
         std::vector<pcl::PointXYZHSV> hsv_means(clusters.size());
         for (size_t i = 0; i < clusters.size(); i++) {
             hsv_means[i] = compute_cluster_mean(clusters[i]);
@@ -410,38 +412,24 @@ private:
     }
 
     void update_objects() {
-        double fitness_threshold = 0.7;
+        ROS_INFO("Updating objects");
+        double fitness_threshold = 0.1;
 
         for (auto& track: tracks_) {
             if (!track.active) {
                 continue;
             }
 
-            if (ros::Time::now() > track.object.redetection_time) {
-                const auto& [type, pose, fitness] = detect_object_from_scratch(track.point_cloud);
-
-                if (fitness > fitness_threshold) {
-                    track.object.type = type;
-                    track.object.pose = pose;
-                    track.object.redetection_time = generate_future_time(
-                        std::normal_distribution<double>(5.0, 2.0));
-                } else {
-                    track.object.type = ObjectType::None;
-                    track.object.redetection_time = generate_future_time(
-                        std::normal_distribution<double>(10.0, 5.0));
-                }
-            } else {
-                if (track.object.type == ObjectType::None) {
-                    continue;
-                }
-
-                // track
-            }
+            const auto& [type, pose, fitness] = detect_object_from_scratch(track.point_cloud);
+            track.object.type = type;
+            track.object.pose = pose;
         }
     }
 
     std::tuple<ObjectType, Eigen::Isometry3d, double> detect_object_from_scratch(
         const pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cluster) {
+        ROS_INFO("Detecting new objects");
+
         pcl::PointCloud<pcl::PointXYZ>::Ptr xyz_cluster(new pcl::PointCloud<pcl::PointXYZ>);
         xyz_cluster->reserve(cluster->size());
         for (const auto& point: cluster->points) {
@@ -460,7 +448,7 @@ private:
         open3d::geometry::OrientedBoundingBox cluster_bb =
             cluster_pc_o3d.GetMinimalOrientedBoundingBox();
 
-        RANSACConvergenceCriteria criteria(10000, 1.0);
+        RANSACConvergenceCriteria criteria(2000, 1.0);
         RegistrationResult best_result;
         best_result.transformation_ = Eigen::Matrix4d::Identity();
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
@@ -477,9 +465,9 @@ private:
                     object_pc_o3d.GetMinimalOrientedBoundingBox();
 
                 double volume_ratio = object_bb.Volume() / cluster_bb.Volume();
-                if (volume_ratio > 1.3 || volume_ratio < 0.7) {
-                    continue;
-                }
+                // if (volume_ratio > 1.3 || volume_ratio < 0.7) {
+                //     continue;
+                // }
 
                 std::vector<double> cluster_extent{
                     cluster_bb.extent_.x(), cluster_bb.extent_.y(), cluster_bb.extent_.z()};
@@ -489,16 +477,19 @@ private:
                 std::sort(object_extent.begin(), object_extent.end());
 
                 double ratio = cluster_extent[2] / object_extent[2];
-                if (ratio > 1.3 || ratio < 0.7) {
-                    continue;
-                }
+                // if (ratio > 1.3 || ratio < 0.7) {
+                //     continue;
+                // }
 
                 object_pc_o3d.EstimateNormals();
                 auto object_features = *ComputeFPFHFeature(object_pc_o3d);
 
-                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster_pc_o3d,
-                    object_pc_o3d, cluster_features, object_features,
-                    FastGlobalRegistrationOption());
+                // auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster_pc_o3d,
+                //     object_pc_o3d, cluster_features, object_features,
+                //     FastGlobalRegistrationOption());
+                auto result = RegistrationRANSACBasedOnFeatureMatching(cluster_pc_o3d,
+                    object_pc_o3d, cluster_features, object_features, false, 0.01,
+                    TransformationEstimationPointToPoint(false), 3, {}, criteria);
 
                 auto icp_result = RegistrationICP(cluster_pc_o3d, object_pc_o3d, 0.01,
                     result.transformation_, TransformationEstimationPointToPlane());
@@ -508,6 +499,7 @@ private:
                     best_type = type;
                 }
             } catch (...) {
+                ROS_WARN("failed ransac");
             }
         }
 
