@@ -49,8 +49,9 @@ public:
         nh_.param<double>("voxel_size", voxel_size_, 0.005);
         nh_.param<std::string>("base_link_frame", base_link_frame_, "wx250s/base_link");
 
-        service = nh_.advertiseService(
+        service_ = nh_.advertiseService(
             "take_snapshot", &ActivePerceptionService::take_snapshot_callback, this);
+        debug_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("debug_cloud", 1, true);
 
         ROS_INFO("Active perception node initialized.");
         ROS_INFO("Using frame %s as base link.", base_link_frame_.c_str());
@@ -81,16 +82,37 @@ private:
         open3d::geometry::PointCloud o3d_cloud;
         open3d_conversions::rosToOpen3d(pc_transformed, o3d_cloud);
 
-        open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(
-            open3d::geometry::AxisAlignedBoundingBox(
-                Eigen::Vector3d(crop_min_x_, crop_min_y_, crop_min_z_),
-                Eigen::Vector3d(crop_max_x_, crop_max_y_, crop_max_z_)));
+        auto crop_box = open3d::geometry::AxisAlignedBoundingBox(
+            Eigen::Vector3d(crop_min_x_, crop_min_y_, crop_min_z_),
+            Eigen::Vector3d(crop_max_x_, crop_max_y_, crop_max_z_));
 
-        pc_so_far += cropped;
+        open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(crop_box);
+        open3d::geometry::PointCloud downsampled = *o3d_cloud.VoxelDownSample(voxel_size_);
+
+        open3d::geometry::PointCloud new_pc = downsampled;
+        // if (!pc_so_far.IsEmpty()) {
+        //     auto result = open3d::pipelines::registration::RegistrationColoredICP(downsampled,
+        //         pc_so_far, 0.03, Eigen::Matrix4d::Identity(),
+        //         open3d::pipelines::registration::TransformationEstimationForColoredICP(),
+        //         open3d::pipelines::registration::ICPConvergenceCriteria(1e-6, 1e-6, 30));
+
+        //     double fitness_threshold = 0.0;
+        //     ROS_INFO("ICP fitness: %f", result.fitness_);
+        //     if (result.fitness_ < fitness_threshold) {
+        //         return false;
+        //     }
+
+        //     new_pc.Transform(result.transformation_);
+        // }
+
+        pc_so_far += new_pc;
+
+        // crop and downsample again
+        pc_so_far = *pc_so_far.Crop(crop_box);
         pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
 
-        open3d_conversions::open3dToRos(pc_so_far, res.collected_cloud);
-
+        open3d_conversions::open3dToRos(pc_so_far, res.collected_cloud, base_link_frame_);
+        debug_pub_.publish(res.collected_cloud);
         return true;
     }
 
@@ -112,7 +134,8 @@ private:
     }
 
     ros::NodeHandle nh_;
-    ros::ServiceServer service;
+    ros::ServiceServer service_;
+    ros::Publisher debug_pub_;
 
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
@@ -126,7 +149,7 @@ private:
 };
 
 int main(int argc, char** argv) {
-    ros::init(argc, argv, "object_registration_node");
+    ros::init(argc, argv, "active_perception_service");
     ActivePerceptionService loader;
     ros::spin();
     return 0;

@@ -25,7 +25,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: Side Camera Image
   - Class: interbotix_xs_rviz/Interbotix Control Panel
     Name: Interbotix Control Panel
     RobotNameSpace: /wx250s
@@ -54,94 +54,6 @@ Visualization Manager:
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
       Value: true
-    - Alpha: 1
-      Class: rviz/RobotModel
-      Collision Enabled: false
-      Enabled: true
-      Links:
-        All Links Enabled: true
-        Expand Joint Details: false
-        Expand Link Details: false
-        Expand Tree: false
-        Link Tree Style: Links in Alphabetic Order
-        wx250s/ar_tag_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/base_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/ee_arm_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        wx250s/ee_gripper_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        wx250s/fingers_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-        wx250s/gripper_bar_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/gripper_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/gripper_prop_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/left_finger_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/lower_forearm_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/right_finger_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/shoulder_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/upper_arm_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/upper_forearm_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        wx250s/wrist_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-      Name: RobotModel
-      Robot Description: robot_description
-      TF Prefix: ""
-      Update Interval: 0
-      Value: true
-      Visual Enabled: true
     - Class: rviz/TF
       Enabled: true
       Filter (blacklist): ""
@@ -149,7 +61,23 @@ Visualization Manager:
       Frame Timeout: 60
       Frames:
         All Enabled: false
+        camera1_color_frame:
+          Value: true
+        camera1_color_optical_frame:
+          Value: true
+        camera1_depth_frame:
+          Value: true
+        camera1_depth_optical_frame:
+          Value: true
         camera1_link:
+          Value: true
+        camera_color_frame:
+          Value: true
+        camera_color_optical_frame:
+          Value: true
+        camera_depth_frame:
+          Value: true
+        camera_depth_optical_frame:
           Value: true
         camera_link:
           Value: true
@@ -191,10 +119,13 @@ Visualization Manager:
       Show Names: true
       Tree:
         wx250s/base_link:
-          camera1_link:
-            {}
           camera_link:
-            {}
+            camera_color_frame:
+              camera_color_optical_frame:
+                {}
+            camera_depth_frame:
+              camera_depth_optical_frame:
+                {}
           wx250s/shoulder_link:
             wx250s/upper_arm_link:
               wx250s/upper_forearm_link:
@@ -203,7 +134,13 @@ Visualization Manager:
                     wx250s/gripper_link:
                       wx250s/ee_arm_link:
                         wx250s/ar_tag_link:
-                          {}
+                          camera1_link:
+                            camera1_color_frame:
+                              camera1_color_optical_frame:
+                                {}
+                            camera1_depth_frame:
+                              camera1_depth_optical_frame:
+                                {}
                         wx250s/gripper_bar_link:
                           wx250s/fingers_link:
                             wx250s/ee_gripper_link:
@@ -271,7 +208,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /filter_cloud/filtered
+      Topic: /active_perception/debug_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -530,7 +467,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 1.8905432224273682
+      Distance: 1.3815122842788696
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -538,17 +475,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.3102477788925171
-        Y: -0.12621936202049255
-        Z: 0.010260453447699547
+        X: 0.2057780921459198
+        Y: -0.21831773221492767
+        Z: 0.026411090046167374
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7547978162765503
+      Pitch: 0.3947980999946594
       Target Frame: <Fixed Frame>
-      Yaw: 1.9822757244110107
+      Yaw: 2.222275495529175
     Saved: ~
 Window Geometry:
   Displays:
@@ -560,9 +497,9 @@ Window Geometry:
     collapsed: false
   MotionPlanning:
     collapsed: false
-  MotionPlanning - Slider:
+  MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000400000000000001f30000035ffc020000000cfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d0000022b000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000c00430061006d0065007200610000000489000000db0000000000000000fb0000000c00430061006d0065007200610000000489000000db0000000000000000fb000000300049006e0074006500720062006f00740069007800200043006f006e00740072006f006c002000500061006e0065006c010000026e0000012e0000012e0000013efb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100ffffff00000001000001f30000035ffc0200000005fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000003d0000018e0000017d00fffffffc000001d1000001cb000000330100001cfa000000010100000002fb000000200054006f0070002000430061006d00650072006100200049006d00610067006501000008e10000010f000000b300fffffffb000000220053006900640065002000430061006d00650072006100200049006d0061006700650100000000ffffffff000000b600fffffffb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000002800000396000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000073800000039fc0100000002fb0000000800540069006d0065010000000000000738000003bc00fffffffb0000000800540069006d00650100000000000004500000000000000000000003460000035f00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000400000000000001f30000035ffc020000000dfb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003d0000022b000000c900fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261fb0000000c00430061006d0065007200610000000489000000db0000000000000000fb0000000c00430061006d0065007200610000000489000000db0000000000000000fb000000300049006e0074006500720062006f00740069007800200043006f006e00740072006f006c002000500061006e0065006c010000026e0000012e0000012e0000013efb000000280020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000000000000000fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff000000160000001600000001000001f30000035ffc0200000005fb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e0067010000003d0000018e0000017d00fffffffc000001d1000001cb000000330100001cfa000000010100000002fb000000200054006f0070002000430061006d00650072006100200049006d00610067006501000008e10000010f000000b300fffffffb000000220053006900640065002000430061006d00650072006100200049006d0061006700650100000000ffffffff000000b600fffffffb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000002800000396000000a400fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000073800000039fc0100000002fb0000000800540069006d0065010000000000000738000003bc00fffffffb0000000800540069006d00650100000000000004500000000000000000000003460000035f00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Side Camera Image:
