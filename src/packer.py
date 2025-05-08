@@ -10,13 +10,18 @@ import pybullet as p
 import pybullet_data
 import time
 import random
-
+import rospy
+from vision_msgs.msg import Detection3DArray
+from robot_manipulation.srv import GeneratePackingPlan, GeneratePackingPlanRequest, GeneratePackingPlanResponse
+from robot_manipulation.msg import PackingPlan, PackItem
+from geometry_msgs.msg import Pose, Point, Quaternion
+from dataclasses import dataclass
 
 # Constants
-BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1 = 88, 127, 200
+BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1 = 88, 127, 63
 SMALL_Z_THRESHOLD1 = 0.9*63 #BIN_HEIGHT1/2
 
-BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2 = 127, 127, 200
+BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2 = 127, 127, 63
 SMALL_Z_THRESHOLD2 = 0.9*63 #BIN_HEIGHT2/2
 
 VOXEL_PITCH = 3.0
@@ -31,12 +36,14 @@ GRID_W2 = int(BIN_WIDTH2 / VOXEL_PITCH)
 GRID_D2 = int(BIN_DEPTH2 / VOXEL_PITCH)
 GRID_H2 = int(BIN_HEIGHT2 / VOXEL_PITCH)
 
-MESH_FOLDER = "our_mesh/set1"
+MESH_FOLDER = "/home/group3/interbotix_ws/src/robot_manipulation/resources/meshes"
 
 # -------------------- Load & Voxelize --------------------
 
 def load_and_voxelize_mesh(file_path, pitch=VOXEL_PITCH):
-    mesh = trimesh.load(file_path)
+    mesh = trimesh.load_mesh(file_path, file_type='stl')
+    mesh.apply_scale(1000)
+    
     voxelized = mesh.voxelized(pitch=pitch).as_boxes()
     voxel_grid = mesh.voxelized(pitch=pitch)
     return {
@@ -45,20 +52,6 @@ def load_and_voxelize_mesh(file_path, pitch=VOXEL_PITCH):
         "voxel_coords": voxel_grid.points,
         "id": os.path.basename(file_path),
         "volume": voxelized.volume,
-    }
-
-def load_and_voxelize_mesh_weights(file_path, pitch=VOXEL_PITCH):
-    mesh = trimesh.load(file_path)
-    voxelized = mesh.voxelized(pitch=pitch).as_boxes()
-    voxel_grid = mesh.voxelized(pitch=pitch)
-    weight = random.uniform(10.0, 100.0)
-    return {
-        "original_mesh": mesh,
-        "voxel_mesh": voxelized,
-        "voxel_coords": voxel_grid.points,
-        "id": os.path.basename(file_path),
-        "volume": voxelized.volume,
-        "weight": weight
     }
 
 def rotate_mesh(mesh, axis, angle_degrees):
@@ -253,40 +246,6 @@ def compare_voxels_rotations(voxelized_mesh):
         bb_area = calculate_bounding_box_area(min_x,max_x,min_y,max_y)
         bb_areas.append(bb_area)
 
-    '''
-        # Draw each voxel as a bar3d cube
-        for point in rotated_voxels1:  # Only consider the bottom layer
-            x, y, z = point
-            ax.bar3d(x, y, z, VOXEL_PITCH, VOXEL_PITCH, VOXEL_PITCH, color=color, alpha=0.4, edgecolor='k', linewidth=0.3)
-            plot_bounding_box(ax, min_x, max_x, min_y, max_y, min_z, max_z)
-
-            ax.set_title(f"Voxel Area: {area:.3f} (Rotation {get_rotation_label(rotation_matrix)})\nBox Area: {bb_area:.3f}")
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
-            ax.set_zlabel("Z")
-
-            # Get the limits of the axes
-            x_limits = ax.get_xlim3d()
-            y_limits = ax.get_ylim3d()
-            z_limits = ax.get_zlim3d()
-
-            # Calculate the range of each axis
-            x_range = abs(x_limits[1] - x_limits[0])
-            y_range = abs(y_limits[1] - y_limits[0])
-            z_range = abs(z_limits[1] - z_limits[0])
-
-            # Calculate the aspect ratio
-            x_aspect = x_range / max(x_range, y_range, z_range)
-            y_aspect = y_range / max(x_range, y_range, z_range)
-            z_aspect = z_range / max(x_range, y_range, z_range)
-
-            # Set the aspect ratio of the axes
-            ax.set_box_aspect((x_aspect, y_aspect, z_aspect))
-        
-    plt.tight_layout()
-    plt.show()
-    '''
-
     # Return surface areas for each rotation
     return surface_areas, bb_areas
 
@@ -413,7 +372,7 @@ def get_footprint_polygon(mesh):
 
 # -------------------- Packing --------------------
 
-def pack_meshes(meshes,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL_Z_THRESHOLD):
+def pack_meshes(items,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL_Z_THRESHOLD):
     placements = []
     occupancy_grid = np.zeros((GRID_W, GRID_D, GRID_H), dtype=bool)
     rotations = generate_rotations()
@@ -421,7 +380,10 @@ def pack_meshes(meshes,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL
 
     unplaced_meshes = []
     unpacked_meshes = []
-    for mesh_info in meshes:
+    for item in items:
+        mesh_info = item.mesh_info
+        object_id = item.id
+
         print("MESH INFO:",mesh_info)
         original_mesh = mesh_info["original_mesh"]
         mesh_id = mesh_info["id"]
@@ -481,7 +443,8 @@ def pack_meshes(meshes,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL
                             "rotation_idx": rot_idx,
                             "x": x,
                             "y": y,
-                            "z": z
+                            "z": z,
+                            "object_id": object_id
                         })
                         mark_voxels(voxel_coords, translation, occupancy_grid)
                         placed = True
@@ -493,10 +456,11 @@ def pack_meshes(meshes,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL
 
         if not placed:
             print(f"🔁 Deferring mesh (no support placement): {mesh_id}")
-            unplaced_meshes.append(mesh_info)
+            unplaced_meshes.append(item)
 
     # --- Second Pass: Place remaining without support, minimizing z ---
-    for mesh_info in unplaced_meshes:
+    for item in unplaced_meshes:
+        mesh_info = item.mesh_info
         original_mesh = mesh_info["original_mesh"]
         mesh_id = mesh_info["id"]
         sorted_rotations = mesh_info["rotations"]
@@ -540,7 +504,8 @@ def pack_meshes(meshes,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL
                                 "rotation_idx": rot_idx,
                                 "x": x,
                                 "y": y,
-                                "z": z
+                                "z": z,
+                                "object_id": item.id,
                             }
 
         if best_placement:
@@ -552,174 +517,6 @@ def pack_meshes(meshes,GRID_W,GRID_D,GRID_H,BIN_WIDTH,BIN_DEPTH,BIN_HEIGHT,SMALL
             print(f"❌ Could not place mesh at all: {mesh_id}")
 
     return placements, occupancy_grid, unpacked_meshes
-
-def pack_meshes_weights(meshes, GRID_W, GRID_D, GRID_H, BIN_WIDTH, BIN_DEPTH, BIN_HEIGHT, SMALL_Z_THRESHOLD):
-    placements = []
-    occupancy_grid = np.zeros((GRID_W, GRID_D, GRID_H), dtype=bool)
-    weight_grid = np.zeros((GRID_W, GRID_D), dtype=float)  # NEW: store top weight per (x, y)
-
-    rotations = generate_rotations()
-
-    unplaced_meshes = []
-    unpacked_meshes = []
-
-    for mesh_info in meshes:
-        original_mesh = mesh_info["original_mesh"]
-        mesh_id = mesh_info["id"]
-        weight = mesh_info["weight"]
-        sorted_rotations = mesh_info["rotations"]
-        placed = False
-
-        for rot_idx, R in enumerate(rotations):
-            if rot_idx not in sorted_rotations:
-                continue
-
-            rotated_mesh = original_mesh.copy()
-            rotated_mesh.apply_transform(np.vstack([np.hstack([R, [[0], [0], [0]]]), [0, 0, 0, 1]]))
-
-            voxel_grid = rotated_mesh.voxelized(pitch=VOXEL_PITCH)
-            voxel_mesh = voxel_grid.as_boxes()
-            voxel_coords = voxel_grid.points
-
-            mesh_width = voxel_mesh.bounds[1][0] - voxel_mesh.bounds[0][0]
-            mesh_depth = voxel_mesh.bounds[1][1] - voxel_mesh.bounds[0][1]
-            mesh_height = voxel_mesh.bounds[1][2] - voxel_mesh.bounds[0][2]
-
-            for z in range(0, BIN_HEIGHT - int(mesh_height) + 1, STEP_SIZE):
-                for x in range(0, BIN_WIDTH - int(mesh_width) + 1, STEP_SIZE):
-                    for y in range(0, BIN_DEPTH - int(mesh_depth) + 1, STEP_SIZE):
-                        translation = np.array([x, y, z]) - voxel_mesh.bounds[0]
-
-                        if voxel_occupied(voxel_coords, translation, occupancy_grid):
-                            continue
-
-                        mesh_bottom_z = z
-                        mesh_top_z = z + mesh_height
-                        mesh_center_z = z + mesh_height / 2
-
-                        #if z == 0:
-                        #    valid_placement = True
-                        #elif z < SMALL_Z_THRESHOLD and has_voxel_support(voxel_coords, translation, occupancy_grid):
-                        #    valid_placement = True
-                        if z == 0 and mesh_center_z <= BIN_HEIGHT and mesh_top_z <= 2*BIN_HEIGHT:
-                            valid_placement = True
-                        elif mesh_center_z <= BIN_HEIGHT and mesh_top_z <= 2*BIN_HEIGHT and has_voxel_support(voxel_coords, translation, occupancy_grid): #z < SMALL_Z_THRESHOLD and has_voxel_support(voxel_coords, translation, occupancy_grid):
-                           valid_placement = True
-                        else:
-                            valid_placement = False
-
-                        if not valid_placement:
-                            continue
-
-                        # ⚖️ Check weight constraint:
-                        if not weight_supports(voxel_coords, translation, weight, weight_grid):
-                            continue
-
-                        # ✅ Place mesh
-                        placements.append({
-                            "mesh": voxel_mesh,
-                            "original_mesh": rotated_mesh,
-                            "voxel_coords": voxel_coords,
-                            "translation": tuple(translation),
-                            "width": mesh_width,
-                            "depth": mesh_depth,
-                            "height": mesh_height,
-                            "id": f"{mesh_id}_rot{rot_idx}",
-                            "rotation_idx": rot_idx,
-                            "x": x,
-                            "y": y,
-                            "z": z,
-                            "weight": weight
-                        })
-                        mark_voxels(voxel_coords, translation, occupancy_grid)
-                        update_weight_grid(voxel_coords, translation, weight, weight_grid)
-                        placed = True
-                        break
-                    if placed: break
-                if placed: break
-            if placed:
-                break
-
-        if not placed:
-            unplaced_meshes.append(mesh_info)
-
-    # --- Second Pass: Place remaining meshes without support ---
-    for mesh_info in unplaced_meshes:
-        original_mesh = mesh_info["original_mesh"]
-        mesh_id = mesh_info["id"]
-        weight = mesh_info["weight"]
-        sorted_rotations = mesh_info["rotations"]
-        best_z = BIN_HEIGHT + 1
-        best_placement = None
-
-        for rot_idx, R in enumerate(rotations):
-            if rot_idx not in sorted_rotations:
-                continue
-
-            rotated_mesh = original_mesh.copy()
-            rotated_mesh.apply_transform(np.vstack([np.hstack([R, [[0], [0], [0]]]), [0, 0, 0, 1]]))
-
-            voxel_grid = rotated_mesh.voxelized(pitch=VOXEL_PITCH)
-            voxel_mesh = voxel_grid.as_boxes()
-            voxel_coords = voxel_grid.points
-
-            mesh_width = voxel_mesh.bounds[1][0] - voxel_mesh.bounds[0][0]
-            mesh_depth = voxel_mesh.bounds[1][1] - voxel_mesh.bounds[0][1]
-            mesh_height = voxel_mesh.bounds[1][2] - voxel_mesh.bounds[0][2]
-
-            for z in range(0, BIN_HEIGHT - int(mesh_height) + 1, STEP_SIZE):
-                for x in range(0, BIN_WIDTH - int(mesh_width) + 1, STEP_SIZE):
-                    for y in range(0, BIN_DEPTH - int(mesh_depth) + 1, STEP_SIZE):
-                        translation = np.array([x, y, z]) - voxel_mesh.bounds[0]
-
-                        if voxel_occupied(voxel_coords, translation, occupancy_grid):
-                            continue
-                        if not weight_supports(voxel_coords, translation, weight, weight_grid):
-                            continue
-                        if z < best_z and z < SMALL_Z_THRESHOLD:
-                            best_z = z
-                            best_placement = {
-                                "mesh": voxel_mesh,
-                                "original_mesh": rotated_mesh,
-                                "voxel_coords": voxel_coords,
-                                "translation": tuple(translation),
-                                "width": mesh_width,
-                                "depth": mesh_depth,
-                                "height": mesh_height,
-                                "id": f"{mesh_id}_rot{rot_idx}",
-                                "rotation_idx": rot_idx,
-                                "x": x,
-                                "y": y,
-                                "z": z,
-                                "weight": weight
-                            }
-
-        if best_placement:
-            placements.append(best_placement)
-            mark_voxels(best_placement["voxel_coords"], np.array(best_placement["translation"]), occupancy_grid)
-            update_weight_grid(best_placement["voxel_coords"], np.array(best_placement["translation"]), weight, weight_grid)
-        else:
-            unpacked_meshes.append(mesh_info)
-
-    return placements, occupancy_grid, unpacked_meshes
-
-def update_weight_grid(voxel_coords, translation, weight, weight_grid):
-    for coord in voxel_coords:
-        pos = np.round(coord + translation).astype(int)
-        x, y, z = pos
-        if 0 <= x < weight_grid.shape[0] and 0 <= y < weight_grid.shape[1]:
-            weight_grid[x, y] = max(weight_grid[x, y], weight)
-
-def weight_supports(voxel_coords, translation, new_weight, weight_grid):
-    for coord in voxel_coords:
-        pos = np.round(coord + translation).astype(int)
-        x, y, z = pos
-        if z == 0:
-            continue  # Ground level is always okay
-        if 0 <= x < weight_grid.shape[0] and 0 <= y < weight_grid.shape[1]:
-            if weight_grid[x, y] < new_weight:
-                return False  # Can't place heavier item on top of lighter
-    return True
 
 # -------------------- Plotting --------------------
 
@@ -868,91 +665,110 @@ def plot_original_meshes(placements, BIN_WIDTH, BIN_DEPTH, BIN_HEIGHT, SMALL_Z_T
     plt.show()
 
 # -------------------- Main --------------------
+@dataclass
+class Item:
+    id: int
+    type: str
+    mesh_info: any
 
-def no_weights():
+type_to_mesh = {}
+type_int_to_str = {
+    0: "can",
+    1: "cube",
+    2: "eggs",
+    3: "milk",
+    4: "toilet_paper",
+    5: "wine"
+}
+
+def pack_no_weights(items):
+    items = sorted(items, key=lambda m: m.mesh_info["voxel_mesh"].volume if m.mesh_info["voxel_mesh"].volume is not None else 0, reverse=True)
+    print(items)
+
+    rotations = generate_rotations()
+
+    all_placements = []
+
+    small_placements, small_occupancy_grid, unpacked_meshes = pack_meshes(items,GRID_W1,GRID_D1,GRID_H1,BIN_WIDTH1,BIN_DEPTH1,BIN_HEIGHT1,SMALL_Z_THRESHOLD1)
+    print("PLACEMENTS SMALL:",small_placements)
+    if len(small_placements) == len(items):
+        print("✅ All objects fit in the SMALL bin!")
+        all_placements = [('small', p) for p in small_placements]
+    else:
+        print("🔁 Not all objects fit in the small bin. Using LARGE bin...")
+        large_placements, large_occupancy_grid, unpacked_meshes = pack_meshes(items,GRID_W2,GRID_D2,GRID_H2,BIN_WIDTH2,BIN_DEPTH2,BIN_HEIGHT2,SMALL_Z_THRESHOLD2)
+        print("PLACEMENTS LARGE:",large_placements)
+        if len(large_placements) == len(items):
+            print("✅ All objects fit in the LARGE bin!")
+            all_placements = [('large', p) for p in large_placements]
+        else:
+            print("Objects need to be split into two bins")
+            small_placements, small_occupancy_grid, unpacked_meshes = pack_meshes(unpacked_meshes,GRID_W1,GRID_D1,GRID_H1,BIN_WIDTH1,BIN_DEPTH1,BIN_HEIGHT1,SMALL_Z_THRESHOLD1)
+            print("PLACEMENTS SMALL:",small_placements)
+            all_placements = [('large', p) for p in large_placements] + [('small', p) for p in small_placements]
+
+    
+    result = []
+    for box, placement in all_placements:
+        width = BIN_WIDTH2 if box == 'large' else BIN_WIDTH1
+        depth = BIN_DEPTH2 if box == 'large' else BIN_DEPTH1
+        height = BIN_HEIGHT2 if box == 'large' else BIN_HEIGHT1
+
+        # convert back to meters
+        x = (placement["translation"][0] - width / 2) / 1000
+        y = (placement["translation"][1] - depth / 2) / 1000
+        z = (placement["translation"][2] - height / 2) / 1000
+        rot_idx = placement["rotation_idx"]
+        item_id = placement["object_id"]
+        quat = trimesh.transformations.quaternion_from_matrix(rotations[rot_idx])
+        pose = Pose(position=Point(x=x, y=y, z=z), orientation=Quaternion(x=quat[1], y=quat[2], z=quat[3], w=quat[0]))
+        result.append(PackItem(item_id=item_id, box_id=(1 if box == 'large' else 0), end_pose=pose))
+
+    return result
+
+
+def load_meshes():
     stl_files = [os.path.join(MESH_FOLDER, f) for f in os.listdir(MESH_FOLDER) if f.endswith('.stl')]
-    meshes = []
     for fp in stl_files:
         mesh = load_and_voxelize_mesh(fp)
         voxel_areas, bb_areas = compare_voxels_rotations(mesh)
         sorted_rotations = compare_180_area_differences(voxel_areas,bb_areas)
         mesh["rotations"] = sorted_rotations
-        meshes.append(mesh)
-    meshes = sorted(meshes, key=lambda m: m["voxel_mesh"].volume if m["voxel_mesh"].volume is not None else 0, reverse=True)
-    print(meshes)
+        file_name, _ = os.path.splitext(os.path.basename(fp))
+        type_to_mesh[file_name] = mesh
+        
 
-    small_placements, small_occupancy_grid, unpacked_meshes = pack_meshes(meshes,GRID_W1,GRID_D1,GRID_H1,BIN_WIDTH1,BIN_DEPTH1,BIN_HEIGHT1,SMALL_Z_THRESHOLD1)
-    print("PLACEMENTS SMALL:",small_placements)
-    if len(small_placements) == len(meshes):
-        print("✅ All objects fit in the SMALL bin!")
-        small_occupancy_grid = np.zeros((GRID_W1, GRID_D1, GRID_H1), dtype=bool)
-        plot_occupancy_grid_per_object(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1)
-        plot_original_meshes(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1, title="Original Meshes Placed in Small Bin")
-    else:
-        print("🔁 Not all objects fit in the small bin. Using LARGE bin...")
-        large_placements, large_occupancy_grid, unpacked_meshes = pack_meshes(meshes,GRID_W2,GRID_D2,GRID_H2,BIN_WIDTH2,BIN_DEPTH2,BIN_HEIGHT2,SMALL_Z_THRESHOLD2)
-        print("PLACEMENTS LARGE:",large_placements)
-        if len(large_placements) == len(meshes):
-            print("✅ All objects fit in the LARGE bin!")
-            large_occupancy_grid = np.zeros((GRID_W2, GRID_D2, GRID_H2), dtype=bool)
-            plot_occupancy_grid_per_object(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2)
-            plot_original_meshes(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2, title="Original Meshes Placed in Large Bin")
-        else:
-            print("Objects need to be split into two bins")
-            large_occupancy_grid = np.zeros((GRID_W2, GRID_D2, GRID_H2), dtype=bool)
-            plot_occupancy_grid_per_object(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2)
-            plot_original_meshes(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2, title="Original Meshes Placed in Large Bin")
+def generate_packing_plan(req):
+    '''
+    Service callback function to process Detection3DArray and return a custom response.
+    'req' is an object of type ProcessDetectionsRequest, which contains 'detections_input'.
+    '''
+    rospy.loginfo("Received %d 3D detections to process.", len(req.detections.detections))
 
-            small_placements, small_occupancy_grid, unpacked_meshes = pack_meshes(unpacked_meshes,GRID_W1,GRID_D1,GRID_H1,BIN_WIDTH1,BIN_DEPTH1,BIN_HEIGHT1,SMALL_Z_THRESHOLD1)
-            print("PLACEMENTS SMALL:",small_placements)
-            small_occupancy_grid = np.zeros((GRID_W1, GRID_D1, GRID_H1), dtype=bool)
-            plot_occupancy_grid_per_object(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1)
-            plot_original_meshes(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1, title="Original Meshes Placed in Small Bin")
+    # Initialize your custom response
+    response = GeneratePackingPlanResponse()
 
-def weights():
-    stl_files = [os.path.join(MESH_FOLDER, f) for f in os.listdir(MESH_FOLDER) if f.endswith('.stl')]
-    meshes = []
-    for fp in stl_files:
-        mesh = load_and_voxelize_mesh_weights(fp)
-        voxel_areas, bb_areas = compare_voxels_rotations(mesh)
-        sorted_rotations = compare_180_area_differences(voxel_areas,bb_areas)
-        mesh["rotations"] = sorted_rotations
-        meshes.append(mesh)
-    meshes = sorted(meshes, key=lambda m: m["voxel_mesh"].volume if m["voxel_mesh"].volume is not None else 0, reverse=True)
-    print(meshes)
+    items = [Item(det.results[0].id, type_int_to_str[det.results[0].id // 10000], type_to_mesh[type_int_to_str[det.results[0].id // 10000]]) for det in req.detections.detections]
+    result = pack_no_weights(items)
 
-    small_placements, small_occupancy_grid, unpacked_meshes = pack_meshes_weights(meshes,GRID_W1,GRID_D1,GRID_H1,BIN_WIDTH1,BIN_DEPTH1,BIN_HEIGHT1,SMALL_Z_THRESHOLD1)
-    print("PLACEMENTS SMALL:",small_placements)
-    if len(small_placements) == len(meshes):
-        print("✅ All objects fit in the SMALL bin!")
-        small_occupancy_grid = np.zeros((GRID_W1, GRID_D1, GRID_H1), dtype=bool)
-        plot_occupancy_grid_per_object(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1)
-        plot_original_meshes(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1, title="Original Meshes Placed in Small Bin")
-    else:
-        print("🔁 Not all objects fit in the small bin. Using LARGE bin...")
-        large_placements, large_occupancy_grid, unpacked_meshes = pack_meshes_weights(meshes,GRID_W2,GRID_D2,GRID_H2,BIN_WIDTH2,BIN_DEPTH2,BIN_HEIGHT2,SMALL_Z_THRESHOLD2)
-        print("PLACEMENTS LARGE:",large_placements)
-        if len(large_placements) == len(meshes):
-            print("✅ All objects fit in the LARGE bin!")
-            large_occupancy_grid = np.zeros((GRID_W2, GRID_D2, GRID_H2), dtype=bool)
-            plot_occupancy_grid_per_object(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2)
-            plot_original_meshes(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2, title="Original Meshes Placed in Large Bin")
-        else:
-            print("Objects need to be split into two bins")
-            large_occupancy_grid = np.zeros((GRID_W2, GRID_D2, GRID_H2), dtype=bool)
-            plot_occupancy_grid_per_object(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2)
-            plot_original_meshes(large_placements, BIN_WIDTH2, BIN_DEPTH2, BIN_HEIGHT2, SMALL_Z_THRESHOLD2, title="Original Meshes Placed in Large Bin")
+    response.plan.items = result
 
-            small_placements, small_occupancy_grid, unpacked_meshes = pack_meshes_weights(unpacked_meshes,GRID_W1,GRID_D1,GRID_H1,BIN_WIDTH1,BIN_DEPTH1,BIN_HEIGHT1,SMALL_Z_THRESHOLD1)
-            print("PLACEMENTS SMALL:",small_placements)
-            small_occupancy_grid = np.zeros((GRID_W1, GRID_D1, GRID_H1), dtype=bool)
-            plot_occupancy_grid_per_object(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1)
-            plot_original_meshes(small_placements, BIN_WIDTH1, BIN_DEPTH1, BIN_HEIGHT1, SMALL_Z_THRESHOLD1, title="Original Meshes Placed in Small Bin")
+    rospy.loginfo("Processing complete. Sending response.")
+    return response
 
+def main():
+    '''
+    Initializes the ROS node and advertises the service.
+    '''
+    load_meshes()
+    rospy.init_node('packer')
+    service_name = 'generate_packing_plan'
+    rospy.Service(service_name, GeneratePackingPlan, generate_packing_plan)
+    rospy.loginfo("Service '%s' is ready.", service_name)
+    rospy.spin()
 
 if __name__ == "__main__":
-    
-    no_weights()
-    
-    weights()
-   
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass

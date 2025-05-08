@@ -27,6 +27,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   tf2_eigen
   tf2_geometry_msgs
+  vision_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -73,6 +74,8 @@ add_message_files(
   FILES
   GraspCandidate.msg
   GraspCandidates.msg
+  PackItem.msg
+  PackingPlan.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -80,6 +83,7 @@ add_service_files(
   FILES
   GenerateGraspCandidates.srv
   ActivePerception.srv
+  GeneratePackingPlan.srv
 )
 
 ## Generate actions in the 'action' folder
@@ -95,6 +99,7 @@ generate_messages(
   std_msgs  # Or other packages containing msgs
   geometry_msgs
   sensor_msgs
+  vision_msgs
 )
 
 ################################################
