@@ -45,9 +45,10 @@
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
     <arg name="serial_no"                         value="834412070801" />
+    <arg name="align_depth"                       value="true" />
   </include>
   
-  <include file="$(find realsense2_camera)/launch/rs_camera.launch" if="$(arg dual_camera)">
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch" if="$(arg dual_camera)" launch-prefix="bash -c 'sleep 3; $0 $@'">
     <arg name="camera"                            value="$(arg cam2_name)" />
     <arg name="filters"                           value="$(arg filters)"/>
     <arg name="color_fps"                         value="$(arg color_fps)"/>
@@ -57,11 +58,12 @@
     <arg name="depth_width"                       value="$(arg depth_width)"/>
     <arg name="depth_height"                      value="$(arg depth_height)"/>
     <arg name="serial_no"                         value="215222076164" />
+    <arg name="align_depth"                       value="true" />
   </include>
 
   <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.300 0.000 0.690 -0.785 1.571 2.345 wx250s/base_link $(arg cam1_name)_link" />
   <!-- <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.210 0.440 0.457 0.281 0.216 -0.734 0.580 wx250s/base_link $(arg cam2_name)_link" launch-prefix="bash -c 'sleep 5; $0 $@'" /> -->
-  <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.0190 0.0175 0.0125 0 0 0 1 wx250s/ar_tag_link $(arg cam2_name)_link" />
+  <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.0190 0.0180 0.0070 0 0 0 1 wx250s/ar_tag_link $(arg cam2_name)_link" />
 
   <node if="$(arg use_rviz)"
     name="rviz"

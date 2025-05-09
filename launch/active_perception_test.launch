@@ -4,23 +4,38 @@
   <node name="active_perception" pkg="robot_manipulation" type="active_perception_service" output="screen">
     <remap from="/point_cloud" to="/camera1/depth/color/points" />
     <remap from="/debug_cloud" to="/active_perception/debug_cloud" />
-    <!-- Parameters for cropping -->
     <param name="crop_min_x" type="double" value="0.0" />
     <param name="crop_min_y" type="double" value="-0.17" />
     <param name="crop_min_z" type="double" value="0.0" />
     <param name="crop_max_x" type="double" value="0.5" />
     <param name="crop_max_y" type="double" value="0.19" />
     <param name="crop_max_z" type="double" value="0.15" />
-    <!-- Parameter for downsampling -->
     <param name="voxel_size" type="double" value="0.003" />
-    <!-- Parameter for target frame -->
     <param name="base_link_frame" type="str" value="wx250s/base_link" />
   </node>
+
+  <!-- <node name="active_perception_node" pkg="robot_manipulation" type="active_perception_node" output="screen">
+    <param name="rgb_topic"             value="/camera1/color/image_raw" />
+    <param name="depth_topic"           value="/camera1/aligned_depth_to_color/image_raw" />
+    <param name="camera_info_topic"     value="/camera1/color/camera_info" />
+
+    <param name="pose_topic_out"        value="/realsense_odometry/pose" />
+
+    <param name="odom_frame_id"         value="wx250s/base_link" />
+    <param name="camera_frame_id"       value="camera1_color_optical_frame" />
+
+    <param name="depth_scale_factor"    value="1000.0" />
+    <param name="depth_trunc_value"     value="3.0" />
+    <param name="odom_depth_min"        value="0.3" />
+    <param name="odom_depth_max"        value="3.0" />
+    <param name="odom_iterations_per_pyramid" value="[20, 10, 5]" />
+  </node> -->
+
 
   <!-- Launch the base functionality -->
   <include file="$(find robot_manipulation)/launch/base.launch">
     <arg name="use_rviz" value="true" />
     <arg name="use_sim" value="$(arg use_sim)" />
-    <arg name="dual_camera" value="true" />
+    <arg name="dual_camera" value="false" />
   </include>
 </launch>

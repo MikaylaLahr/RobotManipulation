@@ -61,6 +61,8 @@ Visualization Manager:
       Frame Timeout: 60
       Frames:
         All Enabled: false
+        camera1_aligned_depth_to_color_frame:
+          Value: true
         camera1_color_frame:
           Value: true
         camera1_color_optical_frame:
@@ -70,6 +72,8 @@ Visualization Manager:
         camera1_depth_optical_frame:
           Value: true
         camera1_link:
+          Value: true
+        camera_aligned_depth_to_color_frame:
           Value: true
         camera_color_frame:
           Value: true
@@ -120,9 +124,11 @@ Visualization Manager:
       Tree:
         wx250s/base_link:
           camera_link:
-            camera_color_frame:
+            camera_aligned_depth_to_color_frame:
               camera_color_optical_frame:
                 {}
+            camera_color_frame:
+              {}
             camera_depth_frame:
               camera_depth_optical_frame:
                 {}
@@ -135,9 +141,11 @@ Visualization Manager:
                       wx250s/ee_arm_link:
                         wx250s/ar_tag_link:
                           camera1_link:
-                            camera1_color_frame:
+                            camera1_aligned_depth_to_color_frame:
                               camera1_color_optical_frame:
                                 {}
+                            camera1_color_frame:
+                              {}
                             camera1_depth_frame:
                               camera1_depth_optical_frame:
                                 {}
@@ -438,7 +446,7 @@ Visualization Manager:
         Show Robot Collision: false
         Show Robot Visual: true
       Value: true
-      Velocity_Scaling_Factor: 1
+      Velocity_Scaling_Factor: 0.1
   Enabled: true
   Global Options:
     Background Color: 0; 176; 240
@@ -467,7 +475,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 1.3815122842788696
+      Distance: 0.6008749008178711
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -475,17 +483,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.2057780921459198
-        Y: -0.21831773221492767
-        Z: 0.026411090046167374
+        X: 0.10787250846624374
+        Y: 0.06502080708742142
+        Z: 0.09245601296424866
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3947980999946594
+      Pitch: 0.5247983932495117
       Target Frame: <Fixed Frame>
-      Yaw: 2.222275495529175
+      Yaw: 2.114152669906616
     Saved: ~
 Window Geometry:
   Displays:

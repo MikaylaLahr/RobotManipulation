@@ -82,14 +82,14 @@ private:
         open3d::geometry::PointCloud o3d_cloud;
         open3d_conversions::rosToOpen3d(pc_transformed, o3d_cloud);
 
-        auto crop_box = open3d::geometry::AxisAlignedBoundingBox(
-            Eigen::Vector3d(crop_min_x_, crop_min_y_, crop_min_z_),
-            Eigen::Vector3d(crop_max_x_, crop_max_y_, crop_max_z_));
+        // auto crop_box = open3d::geometry::AxisAlignedBoundingBox(
+        //     Eigen::Vector3d(crop_min_x_, crop_min_y_, crop_min_z_),
+        //     Eigen::Vector3d(crop_max_x_, crop_max_y_, crop_max_z_));
 
-        open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(crop_box);
-        open3d::geometry::PointCloud downsampled = *o3d_cloud.VoxelDownSample(voxel_size_);
+        // open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(crop_box);
+        // open3d::geometry::PointCloud downsampled = *o3d_cloud.VoxelDownSample(voxel_size_);
 
-        open3d::geometry::PointCloud new_pc = downsampled;
+        // open3d::geometry::PointCloud new_pc = downsampled;
         // if (!pc_so_far.IsEmpty()) {
         //     auto result = open3d::pipelines::registration::RegistrationColoredICP(downsampled,
         //         pc_so_far, 0.03, Eigen::Matrix4d::Identity(),
@@ -105,11 +105,13 @@ private:
         //     new_pc.Transform(result.transformation_);
         // }
 
-        pc_so_far += new_pc;
+        // pc_so_far += new_pc;
 
         // crop and downsample again
-        pc_so_far = *pc_so_far.Crop(crop_box);
-        pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
+        // pc_so_far = *pc_so_far.Crop(crop_box);
+        // pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
+
+        pc_so_far += o3d_cloud;
 
         open3d_conversions::open3dToRos(pc_so_far, res.collected_cloud, base_link_frame_);
         debug_pub_.publish(res.collected_cloud);

@@ -1,34 +1,23 @@
+#!/usr/bin/env python3
+
 import rospy
-
-from interbotix_perception_modules.armtag import InterbotixArmTagInterface
-from interbotix_perception_modules.pointcloud import InterbotixPointCloudInterface
-from interbotix_xs_modules.arm import InterbotixManipulatorXS
-
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
-import cv2
 import numpy as np
-
+import math
+import cv2
+import pyrealsense2
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import PoseStamped, PointStamped
+from interbotix_xs_modules.arm import InterbotixManipulatorXS
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
-import geometry_msgs.msg
-from sensor_msgs.msg import CameraInfo
-import math
 
-import signal
+np.float = float
 
-import pyrealsense2
-
-    
-transform = None
-linktransform = None
-opticaltransform = None
-
-# Class to recieve color and depth images from rostopic
 class ImageListener:
     def __init__(self):
-        self.bridge = CvBridge() #used to convert from ros format to cv
-        self.color_sub = rospy.Subscriber('/camera/color/image_raw', Image, self.color_callback) #Raw topics may cause lag, may be worth trying compressed topics
+        self.bridge = CvBridge()
+        self.color_sub = rospy.Subscriber('/camera/color/image_raw', Image, self.color_callback)
         self.depth_sub = rospy.Subscriber('/camera/aligned_depth_to_color/image_raw', Image, self.depth_callback)
         self.color_info_sub = rospy.Subscriber('/camera/color/camera_info', CameraInfo, self.info_callback)
         self.cv_image = None
@@ -38,315 +27,147 @@ class ImageListener:
     def color_callback(self, msg):
         try:
             self.cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            # Process the color image using OpenCV
-            #cv2.imshow("Color Image", self.cv_image)
-            #cv2.waitKey(1)
         except Exception as e:
             rospy.logerr(f"Color image conversion error: {e}")
 
     def depth_callback(self, msg):
         try:
             self.dp_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            #cv2.imshow("Depth Image", cv_image)
-            #cv2.waitKey(1)
         except Exception as e:
             rospy.logerr(f"Depth image conversion error: {e}")
 
     def info_callback(self, msg):
         self.color_info = msg
 
+def get_intrinsics(info):
+    intrinsics = pyrealsense2.intrinsics()
+    intrinsics.width = info.width
+    intrinsics.height = info.height
+    intrinsics.ppx = info.K[2]
+    intrinsics.ppy = info.K[5]
+    intrinsics.fx = info.K[0]
+    intrinsics.fy = info.K[4]
+    intrinsics.model = pyrealsense2.distortion.none
+    intrinsics.coeffs = list(info.D)
+    return intrinsics
 
-def signal_handler(sig, frame): #ensure behavior with ctrl C
-    rospy.loginfo("Shutdown initiated with Ctrl+C")
-    cv2.destroyAllWindows()
-    exit(0)
+def extract_all_objects(hsv_img, color_bounds):
+    object_pixels = []
+    for color, bounds in color_bounds.items():
+        for low, high in bounds:
+            mask = cv2.inRange(hsv_img, low, high)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                if cv2.contourArea(contour) < 500:
+                    continue
+                M = cv2.moments(contour)
+                if abs(M["m00"]) < 1e-5:
+                    continue
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                object_pixels.append((cx, cy))
+    return object_pixels
 
+def extract_red_bins(hsv_img, red_bounds):
+    bins = []
+    for low, high in red_bounds:
+        mask = cv2.inRange(hsv_img, low, high)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            if cv2.contourArea(contour) < 500:
+                continue
+            M = cv2.moments(contour)
+            if abs(M["m00"]) < 1e-5:
+                continue
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            bins.append((cx, cy))
+    return bins
+
+def get_transformed_point(cx, cy, depth_img, intrinsics, buffer):
+    depth = depth_img[cy, cx]
+    if depth == 0 or math.isnan(depth):
+        return None
+    x, y, z = pyrealsense2.rs2_deproject_pixel_to_point(intrinsics, [cx, cy], depth * 0.001)
+    point = PointStamped()
+    point.header.frame_id = "camera_color_optical_frame"
+    point.header.stamp = rospy.Time.now()
+    point.point.x = x
+    point.point.y = y
+    point.point.z = z
+    try:
+        transform = buffer.lookup_transform('wx250s/base_link', 'camera_color_optical_frame', rospy.Time(0))
+        return do_transform_point(point, transform).point
+    except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+        return None
+
+def move_to_pose(bot, point):
+    x, y, z = point.x + 0.025, point.y, point.z
+    bot.arm.set_ee_pose_components(x=x, y=y, z=z + 0.2, pitch=1.57)
+    rospy.sleep(0.5)
+    bot.arm.set_ee_pose_components(x=x, y=y, z=z, pitch=1.57)
+    rospy.sleep(0.5)
+    bot.gripper.close()
+    rospy.sleep(0.5)
+    bot.arm.set_ee_pose_components(x=x, y=y, z=z + 0.2, pitch=1.57)
+    rospy.sleep(0.5)
+
+def place_in_bin(bot, bin_point):
+    x, y, z = bin_point.x + 0.025, bin_point.y, bin_point.z
+    bot.arm.set_ee_pose_components(x=x, y=y, z=z + 0.2, roll=0.0, pitch=1.57, yaw=0.0)
+    rospy.sleep(0.5)
+    bot.arm.set_ee_pose_components(x=x, y=y, z=z, roll=0.0, pitch=1.57, yaw=0.0)
+    rospy.sleep(0.5)
+    bot.gripper.open()
+    rospy.sleep(0.5)
+    bot.arm.set_ee_pose_components(x=x, y=y, z=z + 0.2, roll=0.0, pitch=1.57, yaw=0.0)
+    rospy.sleep(0.5)
 
 def main():
-    signal.signal(signal.SIGINT, signal_handler)
-    listener = ImageListener() #Listen for image topic
-
-    #   Initialize the arm module along with the pointcloud and armtag modules
+    rospy.init_node("interbotix_pick_place_to_bin")
     bot = InterbotixManipulatorXS("wx250s", moving_time=1.5, accel_time=0.75)
-
-
-
+    listener = ImageListener()
     buffer = tf2_ros.Buffer()
     tf_listener = tf2_ros.TransformListener(buffer)
+    rospy.sleep(2.0)
 
-    pub = rospy.Publisher('/point', geometry_msgs.msg.PointStamped)
-    
-    start_area = 0
+    color_bounds = {
+        'red': [(np.array([0, 100, 50]), np.array([10, 255, 255])), (np.array([160, 100, 50]), np.array([180, 255, 255]))],
+        'blue': [(np.array([100, 150, 50]), np.array([140, 255, 255]))],
+        'green': [(np.array([40, 100, 40]), np.array([90, 255, 255]))],
+        'yellow': [(np.array([20, 100, 100]), np.array([35, 255, 255]))],
+        'pink': [(np.array([145, 100, 100]), np.array([165, 255, 255]))],
+        'gray': [(np.array([0, 0, 40]), np.array([180, 50, 130]))]
+    }
+
     while not rospy.is_shutdown():
-        if listener.cv_image is None or listener.dp_image is None:
-            rospy.loginfo_once("Waiting for frames...")
-            # rospy.loginfo_throttle(1, "Waiting for frames...")
+        if listener.cv_image is None or listener.dp_image is None or listener.color_info is None:
+            rospy.sleep(0.5)
             continue
 
-        color_image = listener.cv_image
-        depth_image = listener.dp_image
-        camera_info = listener.color_info
+        hsv_img = cv2.cvtColor(listener.cv_image, cv2.COLOR_BGR2HSV)
+        intrinsics = get_intrinsics(listener.color_info)
 
-        # temporary
-        listener.cv_image = None
+        object_pixels = extract_all_objects(hsv_img, {k: v for k, v in color_bounds.items() if k != 'red'})
+        bin_pixels = extract_red_bins(hsv_img, color_bounds['red'])
 
-        hsv_img = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
-        
-        # Red Masking
-        low_mask = np.array([0, 140, 20])
-        hi_mask = np.array([10, 255, 255])
-        mask1 = cv2.inRange(hsv_img, low_mask, hi_mask)
-        low_mask = np.array([170, 140, 20])
-        hi_mask = np.array([180, 255,255])
-        mask2 = cv2.inRange(hsv_img, low_mask, hi_mask)
-        red_mask = mask1+mask2
-        
-        
-        red_area = np.count_nonzero(red_mask)
+        if not object_pixels or not bin_pixels:
+            rospy.loginfo("Waiting for objects and bins...")
+            rospy.sleep(1.0)
+            continue
 
-        if (start_area != 1):
-            start_area = 1
-            start_red_area = np.count_nonzero(red_mask)
-            #print("##############################################")
-            #print("Red Area")
-            #print(start_red_area)
-            #print("##############################################")
-        if (start_red_area != 0):
-            percent_fill = (red_area/start_red_area)*100
+        bin_pixels = sorted(bin_pixels, key=lambda x: x[1])  # sort bins by y (screen row), assuming lower bin is lower on screen
 
-        #print("##############################################")
-        print("Percent Fill")
-        #print(percent_fill)
-        #print("##############################################")
+        for obj_cx, obj_cy in object_pixels:
+            obj_point = get_transformed_point(obj_cx, obj_cy, listener.dp_image, intrinsics, buffer)
 
-        '''
-        # Black cube masking
-        low_mask = np.array([0, 0, 0])
-        hi_mask = np.array([180, 140, 100])
-        black_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
-        kernel = np.ones((5, 5), np.uint8)
-        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)'
-        '''
-
-        # Blue cube masking
-        low_mask = np.array([100, 150, 50])
-        hi_mask = np.array([140, 255, 255])
-        blue_mask = cv2.inRange(hsv_img, low_mask, hi_mask)
-        kernel = np.ones((5, 5), np.uint8)
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
-
-        contours_red, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        #contours_black, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours_blue, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        contours_red = list(sorted(contours_red, key=cv2.contourArea, reverse=True))
-        contours_red = contours_red[:1]
-        
-        for contour in contours_red:
-            if cv2.contourArea(contour) < 500:
-                continue
-            
-            moments = cv2.moments(contour)
-            if abs(moments["m00"]) < 1e-5:
-                continue
-
-            center_x = int(moments["m10"] / moments["m00"])
-            center_y = int(moments["m01"] / moments["m00"])
-
-            # Get the 3D position of the object from the depth image (using the center of the contour)
-            depth = depth_image[center_y, center_x]
-            if depth == 0 or math.isnan(depth):
-                continue
-
-            # https://medium.com/@yasuhirachiba/converting-2d-image-coordinates-to-3d-coordinates-using-ros-intel-realsense-d435-kinect-88621e8e733a
-            intrinsics = pyrealsense2.intrinsics()
-            intrinsics.width = camera_info.width
-            intrinsics.height = camera_info.height
-            intrinsics.ppx = camera_info.K[2]
-            intrinsics.ppy = camera_info.K[5]
-            intrinsics.fx = camera_info.K[0]
-            intrinsics.fy = camera_info.K[4]
-            intrinsics.model = pyrealsense2.distortion.none 
-            intrinsics.coeffs = [i for i in camera_info.D]
-
-            x, y, z = pyrealsense2.rs2_deproject_pixel_to_point(intrinsics, [center_x, center_y], depth * 0.001)
-            point = geometry_msgs.msg.PointStamped()
-            point.header.frame_id = "camera_color_optical_frame"
-            point.header.stamp = rospy.Time.now()
-            point.point.x = x
-            point.point.y = y
-            point.point.z = z
-
-            try:
-                transform = buffer.lookup_transform('wx250s/base_link', 'camera_color_optical_frame', rospy.Time(0))
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                continue
-        
-            transformed_point_red = do_transform_point(point, transform)
-
-            #bot.arm.set_ee_pose_components(x=transformed_point_red.point.x, y=transformed_point_red.point.y, z=transformed_point_red.point.z + 0.2)
-            
-            pub.publish(point)
-
-            break
-
-        
-        '''
-        for contour in contours_black:
-            if cv2.contourArea(contour) < 500:
-                continue
-            
-            moments = cv2.moments(contour)
-            if abs(moments["m00"]) < 1e-5:
-                continue
-
-            center_x = int(moments["m10"] / moments["m00"])
-            center_y = int(moments["m01"] / moments["m00"])
-
-            # Get the 3D position of the object from the depth image (using the center of the contour)
-            depth = depth_image[center_y, center_x]
-            if depth == 0 or math.isnan(depth):
-                continue
-
-            # https://medium.com/@yasuhirachiba/converting-2d-image-coordinates-to-3d-coordinates-using-ros-intel-realsense-d435-kinect-88621e8e733a
-            intrinsics = pyrealsense2.intrinsics()
-            intrinsics.width = camera_info.width
-            intrinsics.height = camera_info.height
-            intrinsics.ppx = camera_info.K[2]
-            intrinsics.ppy = camera_info.K[5]
-            intrinsics.fx = camera_info.K[0]
-            intrinsics.fy = camera_info.K[4]
-            intrinsics.model = pyrealsense2.distortion.none 
-            intrinsics.coeffs = [i for i in camera_info.D]
-
-            x, y, z = pyrealsense2.rs2_deproject_pixel_to_point(intrinsics, [center_x, center_y], depth * 0.001)
-            point = geometry_msgs.msg.PointStamped()
-            point.header.frame_id = "camera_color_optical_frame"
-            point.header.stamp = rospy.Time.now()
-            point.point.x = x
-            point.point.y = y
-            point.point.z = z
-
-            try:
-                transform = buffer.lookup_transform('wx250s/base_link', 'camera_color_optical_frame', rospy.Time(0))
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                continue
-        
-            transformed_point = do_transform_point(point, transform)
-
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x, y=transformed_point.point.y, z=transformed_point.point.z + 0.2)
-            
-            pub.publish(point)'
-        '''
-
-        # Initialize a list to store the areas of each blue contour
-        '''
-        blue_areas = []
-        blue_contours_with_area = []
-
-        # Loop through each contour in contours_blue
-        for contour in contours_blue:
-            # Calculate the area of the contour
-            area = cv2.contourArea(contour)
-            blue_areas.append(area)
-            blue_contours_with_area.append((contour, area))
-        '''
-
-        #blue_areas.sort(key=lambda x: x[1], reverse=True)
-
-        for contour in contours_blue: #blue_contours_with_area:               
-            if cv2.contourArea(contour) < 500:
-                continue
-            
-            moments = cv2.moments(contour)
-            if abs(moments["m00"]) < 1e-5:
-                continue
-
-            center_x = int(moments["m10"] / moments["m00"])
-            center_y = int(moments["m01"] / moments["m00"])
-
-            # Get the 3D position of the object from the depth image (using the center of the contour)
-            depth = depth_image[center_y, center_x]
-            if depth == 0 or math.isnan(depth):
-                continue
-
-            # https://medium.com/@yasuhirachiba/converting-2d-image-coordinates-to-3d-coordinates-using-ros-intel-realsense-d435-kinect-88621e8e733a
-            intrinsics = pyrealsense2.intrinsics()
-            intrinsics.width = camera_info.width
-            intrinsics.height = camera_info.height
-            intrinsics.ppx = camera_info.K[2]
-            intrinsics.ppy = camera_info.K[5]
-            intrinsics.fx = camera_info.K[0]
-            intrinsics.fy = camera_info.K[4]
-            intrinsics.model = pyrealsense2.distortion.none 
-            intrinsics.coeffs = [i for i in camera_info.D]
-
-            x, y, z = pyrealsense2.rs2_deproject_pixel_to_point(intrinsics, [center_x, center_y], depth * 0.001)
-            point = geometry_msgs.msg.PointStamped()
-            point.header.frame_id = "camera_color_optical_frame"
-            point.header.stamp = rospy.Time.now()
-            point.point.x = x
-            point.point.y = y
-            point.point.z = z
-
-            try:
-                transform = buffer.lookup_transform('wx250s/base_link', 'camera_color_optical_frame', rospy.Time(0))
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                continue
-        
-            transformed_point = do_transform_point(point, transform)
-
-            #0.025 added to each x due to transform being off when having wrist directly facing down
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x + .025, y=transformed_point.point.y, z=transformed_point.point.z + 0.2, pitch=1.57)
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x + .025, y=transformed_point.point.y, z=transformed_point.point.z, pitch=1.57)
-            bot.gripper.close()
-            bot.arm.set_ee_pose_components(x=transformed_point.point.x + .025, y=transformed_point.point.y, z=transformed_point.point.z + 0.2, pitch=1.57)
-            #set wrist to point directly down above box
-            bot.arm.set_ee_pose_components(
-                x=transformed_point_red.point.x + .025,
-                y=transformed_point_red.point.y,
-                z=transformed_point_red.point.z + 0.2,  # Slightly above the box
-                roll=0.0,
-                pitch=1.57,  # Set pitch to -90 degrees (downward)
-                yaw=0.0
-            )
-            #set object down into box
-            bot.arm.set_ee_pose_components(
-                x=transformed_point_red.point.x + .025,
-                y=transformed_point_red.point.y,
-                z=transformed_point_red.point.z,  # almost all the way down
-                roll=0.0,
-                pitch=1.57,  # Set pitch to -90 degrees (downward)
-                yaw=0.0
-            )
-            bot.gripper.open()
-            #lift out of box
-            bot.arm.set_ee_pose_components(
-                x=transformed_point_red.point.x + .025,
-                y=transformed_point_red.point.y,
-                z=transformed_point_red.point.z + 0.2,  # Slightly above the box
-                roll=0.0,
-                pitch=1.57,  # Set pitch to -90 degrees (downward)
-                yaw=0.0
-            )
-
-
-            #bot.arm.set_ee_pose_components(x=transformed_point_red.point.x, y=transformed_point_red.point.y, z=transformed_point_red.point.z + 0.1, pitch=0.5)
-
-            
-            pub.publish(point)
-
-
-
-
-        bot.arm.go_to_sleep_pose()
-
-
-    cv2.destroyAllWindows()
-
-
-
+            for bin_cx, bin_cy in bin_pixels:
+                bin_point = get_transformed_point(bin_cx, bin_cy, listener.dp_image, intrinsics, buffer)
+                if obj_point and bin_point:
+                    move_to_pose(bot, obj_point)
+                    place_in_bin(bot, bin_point)
+                    break
+            bot.arm.go_to_sleep_pose()
 
 if __name__ == '__main__':
-    print("In Code")
     main()

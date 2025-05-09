@@ -16,10 +16,17 @@
   </node> -->
   
   <!-- Launch the base functionality -->
-  <include file="$(find robot_manipulation)/launch/base.launch">
+  <include file="$(find robot_manipulation)/launch/base_old.launch">
     <arg name="use_rviz" value="true" />
     <arg name="use_sim" value="$(arg use_sim)" />
     <!-- Unfortunately I can't get it to load custom transforms, so I'm going to publish them manually. That file is not necessary anymore. -->
     <!-- <arg name="transform_filepath" value="$(find robot_manipulation)/config/static_transforms.yaml" /> -->
   </include>
+
+  <!-- 
+    To get this number, run the calibration thing they have
+    (roslaunch interbotix_xsarm_perception xsarm_perception.launch robot_model:=wx250s use_pointcloud_tuner_gui:=true use_armtag_tuner_gui:=true)
+    However if you try to input the XYZ rotation it gives I think the order is wrong. So use tf_echo to get the transform as a proper quaternion.
+  -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="camera_base_link_broadcaster" args="0.041 -0.269 0.684 0.691 0.722 -0.029 0.001 camera_color_optical_frame wx250s/base_link" />
 </launch>
