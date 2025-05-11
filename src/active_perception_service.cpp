@@ -25,6 +25,8 @@
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
+#include <apriltag_ros/AprilTagDetectionArray.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include <open3d/Open3D.h>
 #include <opencv2/core/types.hpp>
@@ -40,12 +42,12 @@
 class ActivePerceptionService {
 public:
     ActivePerceptionService(): nh_("~"), tf_listener_(tf_buffer_) {
-        nh_.param<double>("crop_min_x", crop_min_x_, 0.0);
-        nh_.param<double>("crop_min_y", crop_min_y_, -0.2);
-        nh_.param<double>("crop_min_z", crop_min_z_, 0.0);
-        nh_.param<double>("crop_max_x", crop_max_x_, 0.6);
-        nh_.param<double>("crop_max_y", crop_max_y_, 0.2);
-        nh_.param<double>("crop_max_z", crop_max_z_, 0.15);
+        nh_.param<double>("crop_min_x", crop_box_.min_bound_.x(), 0.0);
+        nh_.param<double>("crop_min_y", crop_box_.min_bound_.y(), -0.2);
+        nh_.param<double>("crop_min_z", crop_box_.min_bound_.z(), 0.0);
+        nh_.param<double>("crop_max_x", crop_box_.max_bound_.x(), 0.6);
+        nh_.param<double>("crop_max_y", crop_box_.max_bound_.y(), 0.2);
+        nh_.param<double>("crop_max_z", crop_box_.max_bound_.z(), 0.15);
         nh_.param<double>("voxel_size", voxel_size_, 0.005);
         nh_.param<std::string>("base_link_frame", base_link_frame_, "wx250s/base_link");
 
@@ -54,10 +56,6 @@ public:
         debug_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("debug_cloud", 1, true);
 
         ROS_INFO("Active perception node initialized.");
-        ROS_INFO("Using frame %s as base link.", base_link_frame_.c_str());
-        ROS_INFO("Crop Box Min: [%.3f, %.3f, %.3f]", crop_min_x_, crop_min_y_, crop_min_z_);
-        ROS_INFO("Crop Box Max: [%.3f, %.3f, %.3f]", crop_max_x_, crop_max_y_, crop_max_z_);
-        ROS_INFO("Voxel Size: %.4f", voxel_size_);
     }
 
 private:
@@ -68,50 +66,88 @@ private:
                 "/point_cloud", ros::Duration(1.0));
 
         if (!pc) {
+            ROS_WARN("Timed out waiting for point cloud message.");
             return false;
         }
 
-        auto transformed = transform_point_cloud(*pc, base_link_frame_);
-        if (!transformed) {
+        apriltag_ros::AprilTagDetectionArrayConstPtr tags =
+            ros::topic::waitForMessage<apriltag_ros::AprilTagDetectionArray>(
+                "/tag_detections", ros::Duration(1.0));
+
+        if (!tags) {
+            ROS_WARN("Timed out waiting for AprilTag detections message.");
             return false;
         }
 
-        sensor_msgs::PointCloud2::ConstPtr pc_transformed =
-            boost::make_shared<sensor_msgs::PointCloud2>(std::move(*transformed));
+        if (tags->detections.empty()) {
+            ROS_WARN("No tags in frame!");
+            return false;
+        }
 
-        open3d::geometry::PointCloud o3d_cloud;
-        open3d_conversions::rosToOpen3d(pc_transformed, o3d_cloud);
+        bool found = false;
+        apriltag_ros::AprilTagDetection detection;
+        for (const auto& tag: tags->detections) {
+            if (tag.id[0] == 29) {
+                found = true;
+                detection = tag;
+            }
+        }
 
-        // auto crop_box = open3d::geometry::AxisAlignedBoundingBox(
-        //     Eigen::Vector3d(crop_min_x_, crop_min_y_, crop_min_z_),
-        //     Eigen::Vector3d(crop_max_x_, crop_max_y_, crop_max_z_));
+        if (!found) {
+            ROS_WARN("Correct tag id not found!");
+            return false;
+        }
 
-        // open3d::geometry::PointCloud cropped = *o3d_cloud.Crop(crop_box);
-        // open3d::geometry::PointCloud downsampled = *o3d_cloud.VoxelDownSample(voxel_size_);
+        if (pc_so_far.IsEmpty()) {
+            // first time around, just assume the camera pose is roughly correct
+            // when we get more clouds we will not use the robot's odometry, only the tag to align
+            // scans
+            geometry_msgs::PoseStamped stamped;
+            stamped.header = detection.pose.header;
+            stamped.pose = detection.pose.pose.pose;
 
-        // open3d::geometry::PointCloud new_pc = downsampled;
-        // if (!pc_so_far.IsEmpty()) {
-        //     auto result = open3d::pipelines::registration::RegistrationColoredICP(downsampled,
-        //         pc_so_far, 0.03, Eigen::Matrix4d::Identity(),
-        //         open3d::pipelines::registration::TransformationEstimationForColoredICP(),
-        //         open3d::pipelines::registration::ICPConvergenceCriteria(1e-6, 1e-6, 30));
+            tag_pose_in_base_link = tf_buffer_.transform(stamped, base_link_frame_).pose;
 
-        //     double fitness_threshold = 0.0;
-        //     ROS_INFO("ICP fitness: %f", result.fitness_);
-        //     if (result.fitness_ < fitness_threshold) {
-        //         return false;
-        //     }
+            auto transformed = transform_point_cloud(*pc, base_link_frame_);
+            if (!transformed) {
+                return false;
+            }
 
-        //     new_pc.Transform(result.transformation_);
-        // }
+            sensor_msgs::PointCloud2::ConstPtr pc_transformed =
+                boost::make_shared<sensor_msgs::PointCloud2>(std::move(*transformed));
 
-        // pc_so_far += new_pc;
+            open3d::geometry::PointCloud o3d_cloud;
+            open3d_conversions::rosToOpen3d(pc_transformed, o3d_cloud);
 
-        // crop and downsample again
-        // pc_so_far = *pc_so_far.Crop(crop_box);
-        // pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
+            o3d_cloud = *o3d_cloud.Crop(crop_box_);
+            pc_so_far += o3d_cloud;
+            pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
+        } else {
+            // now need to reconstruct camera -> base_link transform from detection.pose and
+            // tag_pose_in_base_link
+            Eigen::Isometry3d eigen_detection_pose;
+            tf2::fromMsg(detection.pose.pose.pose, eigen_detection_pose);
 
-        pc_so_far += o3d_cloud;
+            Eigen::Isometry3d eigen_tag_pose_base_link;
+            tf2::fromMsg(tag_pose_in_base_link, eigen_tag_pose_base_link);
+
+            auto pc_to_optical = tf_buffer_.lookupTransform(
+                detection.pose.header.frame_id, pc->header.frame_id, pc->header.stamp);
+            Eigen::Isometry3d eigen_pc_to_optical = tf2::transformToEigen(pc_to_optical);
+
+            Eigen::Isometry3d pc_to_base_link = eigen_tag_pose_base_link
+                                                * eigen_detection_pose.inverse()
+                                                * eigen_pc_to_optical;
+
+            open3d::geometry::PointCloud o3d_cloud;
+            open3d_conversions::rosToOpen3d(pc, o3d_cloud);
+
+            o3d_cloud.Transform(pc_to_base_link.matrix());
+
+            o3d_cloud = *o3d_cloud.Crop(crop_box_);
+            pc_so_far += o3d_cloud;
+            pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
+        }
 
         open3d_conversions::open3dToRos(pc_so_far, res.collected_cloud, base_link_frame_);
         debug_pub_.publish(res.collected_cloud);
@@ -145,8 +181,10 @@ private:
 
     open3d::geometry::PointCloud pc_so_far;
 
-    double crop_min_x_, crop_min_y_, crop_min_z_;
-    double crop_max_x_, crop_max_y_, crop_max_z_;
+    geometry_msgs::Pose tag_pose_in_base_link;
+
+    open3d::geometry::AxisAlignedBoundingBox crop_box_;
+
     double voxel_size_;
 };
 

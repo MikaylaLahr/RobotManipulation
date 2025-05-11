@@ -29,6 +29,7 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_geometry_msgs
   vision_msgs
   cv_bridge
+  apriltag_ros
 )
 
 ## System dependencies are found with CMake's conventions

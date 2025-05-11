@@ -6,6 +6,7 @@ Panels:
       Expanded:
         - /Top Camera Image1
         - /PointCloud21
+        - /MotionPlanning1/Planning Request1
       Splitter Ratio: 0.5777778029441833
     Tree Height: 385
   - Class: rviz/Selection
@@ -25,7 +26,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: Side Camera Image
+    SyncSource: ""
   - Class: interbotix_xs_rviz/Interbotix Control Panel
     Name: Interbotix Control Panel
     RobotNameSpace: /wx250s
@@ -61,16 +62,6 @@ Visualization Manager:
       Frame Timeout: 60
       Frames:
         All Enabled: false
-        camera1_aligned_depth_to_color_frame:
-          Value: true
-        camera1_color_frame:
-          Value: true
-        camera1_color_optical_frame:
-          Value: true
-        camera1_depth_frame:
-          Value: true
-        camera1_depth_optical_frame:
-          Value: true
         camera1_link:
           Value: true
         camera_aligned_depth_to_color_frame:
@@ -141,14 +132,7 @@ Visualization Manager:
                       wx250s/ee_arm_link:
                         wx250s/ar_tag_link:
                           camera1_link:
-                            camera1_aligned_depth_to_color_frame:
-                              camera1_color_optical_frame:
-                                {}
-                            camera1_color_frame:
-                              {}
-                            camera1_depth_frame:
-                              camera1_depth_optical_frame:
-                                {}
+                            {}
                         wx250s/gripper_bar_link:
                           wx250s/fingers_link:
                             wx250s/ee_gripper_link:
@@ -446,7 +430,7 @@ Visualization Manager:
         Show Robot Collision: false
         Show Robot Visual: true
       Value: true
-      Velocity_Scaling_Factor: 0.1
+      Velocity_Scaling_Factor: 0.3
   Enabled: true
   Global Options:
     Background Color: 0; 176; 240
@@ -475,7 +459,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 0.6008749008178711
+      Distance: 0.5730130672454834
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -483,17 +467,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.10787250846624374
-        Y: 0.06502080708742142
-        Z: 0.09245601296424866
+        X: 0.18914727866649628
+        Y: 0.026934366673231125
+        Z: 0.13865701854228973
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5247983932495117
+      Pitch: 0.7397971749305725
       Target Frame: <Fixed Frame>
-      Yaw: 2.114152669906616
+      Yaw: 1.5172749757766724
     Saved: ~
 Window Geometry:
   Displays:
