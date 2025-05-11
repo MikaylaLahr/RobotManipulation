@@ -51,6 +51,7 @@
 #include "gs_matching.h"
 #include "open3d_conversions/open3d_conversions.h"
 #include "ros/duration.h"
+#include <opencv2/opencv.hpp>
 
 enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper, Can, None };
 
@@ -270,10 +271,8 @@ private:
 
         cluster_pc_o3d.EstimateNormals();
         auto cluster_features = *ComputeFPFHFeature(cluster_pc_o3d);
-        open3d::geometry::OrientedBoundingBox cluster_bb =
-            cluster_pc_o3d.GetMinimalOrientedBoundingBox();
+        open3d::geometry::OrientedBoundingBox cluster_bb = z_axis_bounding_box(cluster_pc_o3d);
 
-        RANSACConvergenceCriteria criteria(10000, 1.0);
         RegistrationResult best_result;
         best_result.transformation_ = Eigen::Matrix4d::Identity();
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
@@ -308,9 +307,6 @@ private:
                 auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster_pc_o3d,
                     object_pc_o3d, cluster_features, object_features,
                     FastGlobalRegistrationOption());
-                // auto result = RegistrationRANSACBasedOnFeatureMatching(cluster_pc_o3d,
-                //     object_pc_o3d, cluster_features, object_features, false, 0.01,
-                //     TransformationEstimationPointToPoint(false), 3, {}, criteria);
 
                 auto icp_result = RegistrationICP(cluster_pc_o3d, object_pc_o3d, 0.01,
                     result.transformation_, TransformationEstimationPointToPlane());
@@ -324,10 +320,35 @@ private:
             }
         }
 
+        if (best_result.fitness_ < 1.0) {
+            best_type = ObjectType::None;
+        }
+
         Eigen::Isometry3d transform(best_result.transformation_);
         Eigen::Isometry3d pose(transform.inverse());
 
         return {best_type, pose, best_result.fitness_};
+    }
+
+    open3d::geometry::OrientedBoundingBox z_axis_bounding_box(
+        const open3d::geometry::PointCloud& pc) {
+        std::vector<cv::Point2f> projected(pc.points_.size());
+
+        for (size_t i = 0; i < pc.points_.size(); ++i) {
+            Eigen::Vector3d point = pc.points_[i];
+            projected[i] = cv::Point2f(point.x(), point.y());
+        }
+
+        cv::RotatedRect rect = cv::minAreaRect(projected);
+
+        double z_extent = pc.GetMaxBound().z() - pc.GetMinBound().z();
+
+        Eigen::Vector3d center(rect.center.x, rect.center.y, z_extent / 2 + pc.GetMinBound().z());
+        Eigen::Matrix3d rotation(
+            Eigen::AngleAxisd(rect.angle * M_PI / 180.0, Eigen::Vector3d::UnitZ()));
+        Eigen::Vector3d extent(rect.size.width, rect.size.height, z_extent);
+
+        return open3d::geometry::OrientedBoundingBox(center, rotation, extent);
     }
 
     std::vector<pcl::PointCloud<pcl::PointXYZHSV>::Ptr> cluster_cloud(

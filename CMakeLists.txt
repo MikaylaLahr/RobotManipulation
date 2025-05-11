@@ -173,7 +173,6 @@ add_executable(object_reg src/object_reg.cpp)
 add_executable(filter_cloud src/filter_cloud.cpp)
 # add_executable(grasp_gen src/grasp_gen.cpp)
 add_executable(active_perception_service src/active_perception_service.cpp)
-add_executable(active_perception_node src/active_perception_node.cpp)
 
 # add_dependencies(grasp_gen robot_manipulation_generate_messages_cpp)
 
@@ -216,11 +215,7 @@ target_link_libraries(filter_cloud
 target_link_libraries(active_perception_service
   ${catkin_LIBRARIES}
   ${Open3D_LIBRARIES}
-)
-
-target_link_libraries(active_perception_node
-  ${catkin_LIBRARIES}
-  ${Open3D_LIBRARIES}
+  ${OpenCV_LIBS}
 )
 
 #############
