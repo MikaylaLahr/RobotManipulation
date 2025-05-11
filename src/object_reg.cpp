@@ -64,10 +64,12 @@ struct ObjectTypeInfo {
 };
 
 struct Object {
+    size_t id;
     ObjectType type;
     // has a pose if type != None
     Eigen::Isometry3d pose;
     pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cloud;
+    double fitness;
 };
 
 class ObjectRegistration {
@@ -111,9 +113,12 @@ private:
 
         size_t non_none = 0;
         std::vector<Object> objects;
-        for (auto cluster: clusters) {
-            const auto& [type, pose, fitness] = detect_object_from_scratch(cluster);
-            objects.push_back({type, pose, cluster});
+        for (size_t i = 0; i < clusters.size(); i++) {
+            const auto& [type, pose, fitness] = detect_object_from_scratch(clusters[i]);
+            ROS_INFO("Fitness: %f", fitness);
+
+            // i don't care if ids are persistent
+            objects.push_back({i, type, pose, clusters[i], fitness});
             if (type != ObjectType::None) {
                 non_none++;
             }
@@ -121,6 +126,11 @@ private:
         ROS_INFO("%zu objects detected (%zu not ObjectType::None)", objects.size(), non_none);
 
         draw_objects(objects);
+
+        vision_msgs::Detection3DArray detections = convert_objects_to_ros(
+            objects, transformed_opt->header);
+
+        detection_pub_.publish(detections);
 
         visual_tools_->trigger();
     }
@@ -223,34 +233,34 @@ private:
         }
     }
 
-    // vision_msgs::Detection3DArray convert_objects_to_ros(std_msgs::Header
-    // header) {
-    //     vision_msgs::Detection3DArray detection_array;
-    //     detection_array.header = header;
+    vision_msgs::Detection3DArray convert_objects_to_ros(
+        const std::vector<Object>& objects, std_msgs::Header header) {
+        vision_msgs::Detection3DArray detection_array;
+        detection_array.header = header;
 
-    //     for (const auto& track: tracks_) {
-    //         if (!track.active || !track.object) {
-    //             continue;
-    //         }
+        for (const auto& object: objects) {
+            if (object.type == ObjectType::None) {
+                continue;
+            }
 
-    //         vision_msgs::Detection3D detection;
-    //         detection.header = header;
+            vision_msgs::Detection3D detection;
+            detection.header = header;
 
-    //         vision_msgs::BoundingBox3D bbox;
-    //         bbox.center = tf2::toMsg(track.object->pose);
-    //         detection.bbox = bbox;
+            vision_msgs::BoundingBox3D bbox;
+            bbox.center = tf2::toMsg(object.pose);
+            detection.bbox = bbox;
 
-    //         vision_msgs::ObjectHypothesisWithPose hypothesis;
-    //         hypothesis.id = track.id;
-    //         hypothesis.pose.pose = tf2::toMsg(track.object->pose);
-    //         hypothesis.score = 1.0;
-    //         detection.results.push_back(hypothesis);
+            vision_msgs::ObjectHypothesisWithPose hypothesis;
+            hypothesis.id = 10000 * object.type + object.id;
+            hypothesis.pose.pose = tf2::toMsg(object.pose);
+            hypothesis.score = object.fitness;
+            detection.results.push_back(hypothesis);
 
-    //         detection_array.detections.push_back(detection);
-    //     }
+            detection_array.detections.push_back(detection);
+        }
 
-    //     return detection_array;
-    // }
+        return detection_array;
+    }
 
     std::tuple<ObjectType, Eigen::Isometry3d, double> detect_object_from_scratch(
         const pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cluster) {
@@ -296,10 +306,10 @@ private:
                 std::sort(object_extent.begin(), object_extent.end());
 
                 double ratio = cluster_extent[2] / object_extent[2];
-                if (ratio > 1.5 || ratio < 0.5) {
-                    ROS_INFO("Extent ratio test failed");
-                    continue;
-                }
+                // if (ratio > 1.5 || ratio < 0.5) {
+                //     ROS_INFO("Extent ratio test failed");
+                //     continue;
+                // }
 
                 object_pc_o3d.EstimateNormals();
                 auto object_features = *ComputeFPFHFeature(object_pc_o3d);
@@ -320,7 +330,8 @@ private:
             }
         }
 
-        if (best_result.fitness_ < 1.0) {
+        double fitness_threshold = 0.9;
+        if (best_result.fitness_ < fitness_threshold) {
             best_type = ObjectType::None;
         }
 

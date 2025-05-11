@@ -39,6 +39,10 @@
     <remap from="/detections" to="/object_reg/detections" />
   </node>
 
+  <node name="grasp_gen_service" pkg="robot_manipulation" type="grasp_gen" output="screen">
+    <param name="config_file" type="str" value="$(find robot_manipulation)/resources/ros_grasp.cfg" />
+  </node>
+
   <!-- Launch the base functionality -->
   <include file="$(find robot_manipulation)/launch/base.launch">
     <arg name="use_rviz" value="true" />
