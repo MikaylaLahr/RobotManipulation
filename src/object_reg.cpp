@@ -44,17 +44,13 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
-#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "geometry_msgs/Vector3.h"
 #include "gs_matching.h"
 #include "open3d_conversions/open3d_conversions.h"
 #include "ros/duration.h"
-#include "ros/time.h"
-#include "std_msgs/ColorRGBA.h"
 
 enum ObjectType { Cube, Milk, Wine, Eggs, ToiletPaper, Can, None };
 
@@ -68,18 +64,9 @@ struct ObjectTypeInfo {
 
 struct Object {
     ObjectType type;
-    ros::Time redetection_time;
     // has a pose if type != None
     Eigen::Isometry3d pose;
-};
-
-struct ClusterTrack {
-    int id;
-    bool active;
-    ros::Time last_detected;
-    pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr point_cloud;
-    pcl::PointXYZHSV mean;
-    Object object;
+    pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cloud;
 };
 
 class ObjectRegistration {
@@ -120,9 +107,19 @@ private:
 
         auto cloud_ptr = boost::make_shared<pcl::PointCloud<pcl::PointXYZHSV>>(hsv);
         auto clusters = cluster_cloud(cloud_ptr);
-        update_tracks(std::move(clusters), cloud_msg->header.stamp);
-        update_objects();
-        draw_tracks();
+
+        size_t non_none = 0;
+        std::vector<Object> objects;
+        for (auto cluster: clusters) {
+            const auto& [type, pose, fitness] = detect_object_from_scratch(cluster);
+            objects.push_back({type, pose, cluster});
+            if (type != ObjectType::None) {
+                non_none++;
+            }
+        }
+        ROS_INFO("%zu objects detected (%zu not ObjectType::None)", objects.size(), non_none);
+
+        draw_objects(objects);
 
         visual_tools_->trigger();
     }
@@ -188,44 +185,40 @@ private:
         }
     }
 
-    void draw_tracks() {
-        for (const auto& track: tracks_) {
-            if (!track.active) {
+    void draw_objects(const std::vector<Object>& objects) {
+        pcl::MomentOfInertiaEstimation<pcl::PointXYZHSV> feature_extractor;
+
+        for (size_t i = 0; i < objects.size(); i++) {
+            const auto& object = objects[i];
+
+            feature_extractor.setInputCloud(object.cloud);
+            feature_extractor.compute();
+
+            pcl::PointXYZHSV min_point_OBB;
+            pcl::PointXYZHSV max_point_OBB;
+            pcl::PointXYZHSV position_OBB;
+            Eigen::Matrix3f rotational_matrix_OBB;
+            feature_extractor.getOBB(
+                min_point_OBB, max_point_OBB, position_OBB, rotational_matrix_OBB);
+
+            Eigen::Isometry3d bb_pose;
+            bb_pose.linear() = rotational_matrix_OBB.cast<double>();
+            bb_pose.translation() = position_OBB.getVector3fMap().cast<double>();
+
+            visual_tools_->publishWireframeCuboid(bb_pose,
+                min_point_OBB.getVector3fMap().cast<double>(),
+                max_point_OBB.getVector3fMap().cast<double>());
+            visual_tools_->publishAxis(bb_pose, rviz_visual_tools::SMALL);
+
+            if (object.type == ObjectType::None) {
                 continue;
             }
 
-            pcl::PointXYZRGB rgb;
-            pcl::PointXYZHSVtoXYZRGB(track.mean, rgb);
+            ObjectTypeInfo info = object_types_[object.type];
 
-            std_msgs::ColorRGBA rgba;
-            rgba.r = static_cast<float>(rgb.r) / 255;
-            rgba.g = static_cast<float>(rgb.g) / 255;
-            rgba.b = static_cast<float>(rgb.b) / 255;
-            rgba.a = 1.0;
-
-            geometry_msgs::Vector3 scale;
-            scale.x = 0.01;
-            scale.y = 0.01;
-            scale.z = 0.01;
-
-            Eigen::Vector3d center(track.mean.x, track.mean.y, track.mean.z);
-
-            Eigen::Isometry3d text_pose = Eigen::Isometry3d::Identity();
-            text_pose.translation() = center + Eigen::Vector3d(0, 0, 0.1);
-            // avoid id = 0
-            visual_tools_->publishSphere(center, rgba, scale, "sphere", track.id + 1);
-            visual_tools_->publishText(text_pose, std::to_string(track.id),
-                rviz_visual_tools::WHITE, rviz_visual_tools::MEDIUM, false);
-
-            if (track.object.type == ObjectType::None) {
-                continue;
-            }
-
-            ObjectTypeInfo info = object_types_[track.object.type];
-
-            Eigen::Isometry3d pose = track.object.pose;
+            Eigen::Isometry3d pose = object.pose;
             visual_tools_->publishMesh(pose, std::string("file://") + info.mesh_path,
-                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", track.id + 1);
+                rviz_visual_tools::colors::TRANSLUCENT_DARK, 1.0, "mesh", i + 1);
         }
     }
 
@@ -258,174 +251,6 @@ private:
     //     return detection_array;
     // }
 
-    template<typename Distribution>
-    ros::Time generate_future_time(Distribution dist) {
-        double future_seconds = dist(gen);
-        if (future_seconds < 0) {
-            future_seconds = 0;
-        }
-        return ros::Time::now() + ros::Duration(future_seconds);
-    }
-
-    void update_tracks(
-        std::vector<pcl::PointCloud<pcl::PointXYZHSV>> clusters, ros::Time detection_time) {
-        ROS_INFO("Updating tracks");
-
-        std::vector<pcl::PointXYZHSV> hsv_means(clusters.size());
-        for (size_t i = 0; i < clusters.size(); i++) {
-            hsv_means[i] = compute_cluster_mean(clusters[i]);
-        }
-
-        std::vector<int> track_matches(tracks_.size(), -1);
-        std::vector<bool> clusters_taken(clusters.size(), false);
-
-        for (size_t j = 0; j < tracks_.size(); j++) {
-            const auto& track = tracks_[j];
-            Eigen::Vector3d track_center(track.mean.x, track.mean.y, track.mean.z);
-
-            int best_cluster = -1;
-
-            for (size_t i = 0; i < clusters.size(); i++) {
-                if (clusters_taken[i]) {
-                    continue;
-                }
-
-                Eigen::Vector3d cluster_center(hsv_means[i].x, hsv_means[i].y, hsv_means[i].z);
-
-                if ((track_center - cluster_center).norm() > 0.05) {
-                    continue;
-                }
-
-                double hue_dist = 0;
-                if (std::abs(track.mean.h - hsv_means[i].h) > 180) {
-                    hue_dist = 360 - std::abs(track.mean.h - hsv_means[i].h);
-                } else {
-                    hue_dist = std::abs(track.mean.h - hsv_means[i].h);
-                }
-
-                if (hue_dist > 30) {
-                    continue;
-                }
-
-                if (best_cluster == -1) {
-                    best_cluster = i;
-                    clusters_taken[i] = true;
-                    continue;
-                }
-
-                Eigen::Vector3d other_cluster_center(hsv_means[best_cluster].x,
-                    hsv_means[best_cluster].y, hsv_means[best_cluster].z);
-                if ((track_center - cluster_center).norm()
-                    < (track_center - other_cluster_center).norm()) {
-                    best_cluster = i;
-                    clusters_taken[i] = true;
-                }
-            }
-
-            track_matches[j] = best_cluster;
-        }
-
-        for (size_t i = 0; i < track_matches.size(); i++) {
-            auto& track = tracks_[i];
-
-            if (track_matches[i] != -1) {
-                const auto& cluster = clusters[track_matches[i]];
-                track.active = true;
-                track.last_detected = detection_time;
-                track.mean = compute_cluster_mean(cluster);
-                track.point_cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZHSV>>(
-                    std::move(cluster));
-            } else {
-                track.active = false;
-            }
-        }
-
-        for (size_t i = 0; i < clusters.size(); i++) {
-            if (!clusters_taken[i]) {
-                ClusterTrack track;
-                track.id = next_id++;
-                track.active = true;
-                track.last_detected = detection_time;
-                track.mean = compute_cluster_mean(clusters[i]);
-                track.point_cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZHSV>>(
-                    std::move(clusters[i]));
-                track.object.type = ObjectType::None;
-                track.object.redetection_time = generate_future_time(
-                    std::normal_distribution<double>(1.0, 0.5));
-                tracks_.push_back(track);
-            }
-        }
-
-        // delete tracks that haven't been detected
-        std::vector<ClusterTrack> recent_tracks;
-        recent_tracks.reserve(tracks_.size());
-        for (const auto& track: tracks_) {
-            if (!track.active && detection_time - track.last_detected > ros::Duration(1)) {
-                continue;
-            }
-
-            recent_tracks.push_back(track);
-        }
-
-        tracks_ = std::move(recent_tracks);
-    }
-
-    pcl::PointXYZHSV compute_cluster_mean(const pcl::PointCloud<pcl::PointXYZHSV>& cluster) {
-        Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
-        Eigen::Vector2f hue_avg = Eigen::Vector2f::Zero();
-        float sat_avg = 0;
-        float val_avg = 0;
-        size_t num_hue_avg = 0;
-
-        for (const auto& point: cluster) {
-            centroid += point.getVector3fMap();
-
-            if (point.s > 0.2) {
-                float hue_rad = point.h / 180 * M_PI;
-                Eigen::Vector2f hue_vec(std::cos(hue_rad), std::sin(hue_rad));
-                hue_avg += hue_vec;
-                num_hue_avg++;
-            }
-
-            sat_avg += point.s;
-            val_avg += point.v;
-        }
-        centroid /= cluster.size();
-        hue_avg /= num_hue_avg;
-        sat_avg /= cluster.size();
-        val_avg /= cluster.size();
-
-        pcl::PointXYZHSV mean;
-        mean.x = centroid.x();
-        mean.y = centroid.y();
-        mean.z = centroid.z();
-
-        if (num_hue_avg > 0.1 * cluster.size()) {
-            mean.h = std::fmod(std::atan2(hue_avg.y(), hue_avg.x()) / M_PI * 180, 180);
-        } else {
-            mean.h = 0;
-        }
-        mean.s = sat_avg;
-        mean.v = val_avg;
-
-        return mean;
-    }
-
-    void update_objects() {
-        ROS_INFO("Updating objects");
-        double fitness_threshold = 0.1;
-
-        for (auto& track: tracks_) {
-            if (!track.active) {
-                continue;
-            }
-
-            const auto& [type, pose, fitness] = detect_object_from_scratch(track.point_cloud);
-            track.object.type = type;
-            track.object.pose = pose;
-        }
-    }
-
     std::tuple<ObjectType, Eigen::Isometry3d, double> detect_object_from_scratch(
         const pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cluster) {
         ROS_INFO("Detecting new objects");
@@ -448,7 +273,7 @@ private:
         open3d::geometry::OrientedBoundingBox cluster_bb =
             cluster_pc_o3d.GetMinimalOrientedBoundingBox();
 
-        RANSACConvergenceCriteria criteria(2000, 1.0);
+        RANSACConvergenceCriteria criteria(10000, 1.0);
         RegistrationResult best_result;
         best_result.transformation_ = Eigen::Matrix4d::Identity();
         best_result.fitness_ = -std::numeric_limits<double>::infinity();
@@ -464,11 +289,6 @@ private:
                 open3d::geometry::OrientedBoundingBox object_bb =
                     object_pc_o3d.GetMinimalOrientedBoundingBox();
 
-                double volume_ratio = object_bb.Volume() / cluster_bb.Volume();
-                // if (volume_ratio > 1.3 || volume_ratio < 0.7) {
-                //     continue;
-                // }
-
                 std::vector<double> cluster_extent{
                     cluster_bb.extent_.x(), cluster_bb.extent_.y(), cluster_bb.extent_.z()};
                 std::sort(cluster_extent.begin(), cluster_extent.end());
@@ -477,19 +297,20 @@ private:
                 std::sort(object_extent.begin(), object_extent.end());
 
                 double ratio = cluster_extent[2] / object_extent[2];
-                // if (ratio > 1.3 || ratio < 0.7) {
-                //     continue;
-                // }
+                if (ratio > 1.5 || ratio < 0.5) {
+                    ROS_INFO("Extent ratio test failed");
+                    continue;
+                }
 
                 object_pc_o3d.EstimateNormals();
                 auto object_features = *ComputeFPFHFeature(object_pc_o3d);
 
-                // auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster_pc_o3d,
-                //     object_pc_o3d, cluster_features, object_features,
-                //     FastGlobalRegistrationOption());
-                auto result = RegistrationRANSACBasedOnFeatureMatching(cluster_pc_o3d,
-                    object_pc_o3d, cluster_features, object_features, false, 0.01,
-                    TransformationEstimationPointToPoint(false), 3, {}, criteria);
+                auto result = FastGlobalRegistrationBasedOnFeatureMatching(cluster_pc_o3d,
+                    object_pc_o3d, cluster_features, object_features,
+                    FastGlobalRegistrationOption());
+                // auto result = RegistrationRANSACBasedOnFeatureMatching(cluster_pc_o3d,
+                //     object_pc_o3d, cluster_features, object_features, false, 0.01,
+                //     TransformationEstimationPointToPoint(false), 3, {}, criteria);
 
                 auto icp_result = RegistrationICP(cluster_pc_o3d, object_pc_o3d, 0.01,
                     result.transformation_, TransformationEstimationPointToPlane());
@@ -509,7 +330,7 @@ private:
         return {best_type, pose, best_result.fitness_};
     }
 
-    std::vector<pcl::PointCloud<pcl::PointXYZHSV>> cluster_cloud(
+    std::vector<pcl::PointCloud<pcl::PointXYZHSV>::Ptr> cluster_cloud(
         pcl::PointCloud<pcl::PointXYZHSV>::ConstPtr cloud) {
         pcl::ConditionalEuclideanClustering<pcl::PointXYZHSV> clustering;
         pcl::search::Search<pcl::PointXYZHSV>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZHSV>);
@@ -533,7 +354,7 @@ private:
             if (first.s > 0.1 && second.s > 0.1 && first.v > 0.1 && second.v > 0.1) {
                 return hue_dist < 5 && sat_dist < 0.05 && val_dist < 0.05;
             } else {
-                return sat_dist < 0.05 && val_dist < 0.05;
+                return sat_dist < 0.03 && val_dist < 0.03;
             }
         };
 
@@ -542,16 +363,17 @@ private:
         clustering.setSearchMethod(tree);
         clustering.setConditionFunction(std::function(condition_func));
         clustering.setMinClusterSize(200);
-        clustering.setClusterTolerance(0.02);
+        clustering.setClusterTolerance(0.01);
 
         std::vector<pcl::PointIndices> point_indices;
         clustering.segment(point_indices);
 
-        std::vector<pcl::PointCloud<pcl::PointXYZHSV>> clusters(point_indices.size());
+        std::vector<pcl::PointCloud<pcl::PointXYZHSV>::Ptr> clusters(point_indices.size());
         for (size_t i = 0; i < point_indices.size(); i++) {
-            clusters[i].reserve(point_indices[i].indices.size());
+            clusters[i] = boost::make_shared<pcl::PointCloud<pcl::PointXYZHSV>>();
+            clusters[i]->reserve(point_indices[i].indices.size());
             for (auto point_idx: point_indices[i].indices) {
-                clusters[i].push_back(cloud->points[point_idx]);
+                clusters[i]->push_back(cloud->points[point_idx]);
             }
         }
 
@@ -580,9 +402,6 @@ private:
     ros::Publisher filtered_pub_;
     ros::Publisher detection_pub_;
 
-    int next_id = 0;
-    std::vector<ClusterTrack> tracks_;
-
     tf2_ros::Buffer tf_buffer_;
     tf2_ros::TransformListener tf_listener_;
     std::string base_link_frame_ = "wx250s/base_link";
@@ -590,9 +409,6 @@ private:
     rviz_visual_tools::RvizVisualToolsPtr visual_tools_;
 
     std::unordered_map<ObjectType, ObjectTypeInfo> object_types_;
-
-    std::random_device rd{};
-    std::mt19937 gen{rd()};
 };
 
 int main(int argc, char** argv) {
