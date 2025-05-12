@@ -10,7 +10,7 @@
     <param name="crop_min_x" type="double" value="0.0" />
     <param name="crop_min_y" type="double" value="-0.17" />
     <param name="crop_min_z" type="double" value="0.0" />
-    <param name="crop_max_x" type="double" value="0.5" />
+    <param name="crop_max_x" type="double" value="0.35" />
     <param name="crop_max_y" type="double" value="0.19" />
     <param name="crop_max_z" type="double" value="0.15" />
     <param name="voxel_size" type="double" value="0.003" />
@@ -41,6 +41,13 @@
 
   <node name="grasp_gen_service" pkg="robot_manipulation" type="grasp_gen" output="screen">
     <param name="config_file" type="str" value="$(find robot_manipulation)/resources/ros_grasp.cfg" />
+  </node>
+
+  <node name="box_detector_node" pkg="robot_manipulation" type="box_detector" output="screen">
+    <remap from="/point_cloud" to="/camera/depth/color/points" />
+    <remap from="/rviz_debug" to="/box_detector/rviz_debug" />
+    <remap from="/filtered_point_cloud" to="/box_detector/filtered" />
+    <remap from="/detections" to="/box_detector/detections" />
   </node>
 
   <!-- Launch the base functionality -->

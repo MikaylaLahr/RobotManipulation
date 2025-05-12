@@ -61,7 +61,7 @@
     <arg name="align_depth"                       value="true" />
   </include>
 
-  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.285 0.015 0.690 -0.785 1.571 2.300 wx250s/base_link $(arg cam1_name)_link" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.330 0.015 0.700 -0.785 1.571 2.330 wx250s/base_link $(arg cam1_name)_link" />
   <!-- <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.210 0.440 0.457 0.281 0.216 -0.734 0.580 wx250s/base_link $(arg cam2_name)_link" launch-prefix="bash -c 'sleep 5; $0 $@'" /> -->
   <node if="$(arg dual_camera)" pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam2_name)_base_link_broadcaster" args="0.0180 0.0175 0.0070 0 0 0 1 wx250s/ar_tag_link $(arg cam2_name)_link" />
 

@@ -305,11 +305,18 @@ private:
                     object_bb.extent_.x(), object_bb.extent_.y(), object_bb.extent_.z()};
                 std::sort(object_extent.begin(), object_extent.end());
 
-                double ratio = cluster_extent[2] / object_extent[2];
-                // if (ratio > 1.5 || ratio < 0.5) {
-                //     ROS_INFO("Extent ratio test failed");
-                //     continue;
-                // }
+                bool cooked = false;
+                for (size_t i = 0; i < cluster_extent.size(); i++) {
+                    double ratio = cluster_extent[i] / object_extent[i];
+                    if (ratio > 1.6 || ratio < 0.4) {
+                        ROS_INFO("Extent ratio test failed");
+                        cooked = true;
+                        break;
+                    }
+                }
+                if (cooked) {
+                    continue;
+                }
 
                 object_pc_o3d.EstimateNormals();
                 auto object_features = *ComputeFPFHFeature(object_pc_o3d);
@@ -330,7 +337,7 @@ private:
             }
         }
 
-        double fitness_threshold = 0.9;
+        double fitness_threshold = 0.95;
         if (best_result.fitness_ < fitness_threshold) {
             best_type = ObjectType::None;
         }

@@ -172,7 +172,7 @@ private:
         std::vector<Object> recent_tracks;
         recent_tracks.reserve(tracks_.size());
         for (const auto& track: tracks_) {
-            if (!track.active && track.last_detected - detection_time > ros::Duration(30)) {
+            if (!track.active && detection_time - track.last_detected > ros::Duration(10)) {
                 continue;
             }
 
