@@ -102,6 +102,10 @@ private:
         detection_array.header = header;
 
         for (const auto& track: tracks_) {
+            if (!track.active) {
+                continue;
+            }
+
             Eigen::Vector3d center = track.bbox.center_;
             Eigen::Vector3d extent = track.bbox.extent_;
             Eigen::Matrix3d rotation = track.bbox.R_;
@@ -195,6 +199,14 @@ private:
 
             if (obb.Volume() < 0.07 * 0.07 * 0.07) {
                 continue;
+            }
+
+            if (obb.extent_.x() > obb.extent_.y()) {
+                std::swap(obb.extent_.y(), obb.extent_.x());
+
+                Eigen::Vector3d temp = obb.R_.col(0);
+                obb.R_.col(0) = -obb.R_.col(1);
+                obb.R_.col(1) = temp;
             }
 
             boxes.push_back(obb);

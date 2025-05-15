@@ -34,5 +34,5 @@
     <arg name="serial_no"                         value="834412070801" />
   </include>
 
-  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.300 0.000 0.690 -0.785 1.571 2.345 wx250s/base_link $(arg cam1_name)_link" />
+  <node pkg="tf2_ros" type="static_transform_publisher" name="$(arg cam1_name)_base_link_broadcaster" args="0.300 0.000 0.680 -0.785 1.571 2.330 wx250s/base_link $(arg cam1_name)_link" />
 </launch>

@@ -25,6 +25,7 @@ from sensor_msgs.msg import JointState
 from moveit_msgs.msg import RobotState
 from std_msgs.msg import Header
 from interbotix_xs_modules.gripper import InterbotixGripperXS
+import copy
 
 
 @dataclass
@@ -34,10 +35,10 @@ class MotionGoal:
 
 
 GOALS = [
-    MotionGoal(pose=Pose(position=Point(x=0.15, y=0.0, z=0.35), orientation=Quaternion(
-        x=0, y=0.6427876, z=0, w=0.7660444)), take_snapshot=True),
     MotionGoal(pose=Pose(position=Point(x=0.0, y=0.0, z=0.35), orientation=Quaternion(
         x=0, y=0.428, z=0, w=0.904)), take_snapshot=True),
+    MotionGoal(pose=Pose(position=Point(x=0.15, y=0.0, z=0.35), orientation=Quaternion(
+        x=0, y=0.6427876, z=0, w=0.7660444)), take_snapshot=True),
     MotionGoal(pose=Pose(position=Point(x=0.047, y=0.227, z=0.144), orientation=Quaternion(
         x=0.07129, y=0.1788946, z=-0.3632623, w=0.9115673)), take_snapshot=True),
     MotionGoal(pose=Pose(position=Point(x=0.047, y=-0.227, z=0.144), orientation=Quaternion(
@@ -177,7 +178,7 @@ def add_pole_obstacles(moveit: MoveItInterface):
     box_pose = PoseStamped()
     box_pose.header.frame_id = "wx250s/base_link"
     box_pose.pose.position.x = 0.35
-    box_pose.pose.position.y = -0.2
+    box_pose.pose.position.y = -0.18
     box_pose.pose.position.z = 0.5
     box_pose.pose.orientation.w = 1.0  # No rotation
     box_dimensions = (0.05, 0.05, 1.0)
@@ -188,7 +189,7 @@ def add_pole_obstacles(moveit: MoveItInterface):
     box_pose = PoseStamped()
     box_pose.header.frame_id = "wx250s/base_link"
     box_pose.pose.position.x = 0.35
-    box_pose.pose.position.y = 0.2
+    box_pose.pose.position.y = 0.20
     box_pose.pose.position.z = 0.5
     box_pose.pose.orientation.w = 1.0  # No rotation
     box_dimensions = (0.05, 0.05, 1.0)
@@ -298,15 +299,6 @@ def close_gripper(moveit: MoveItInterface, width: float) -> bool:
     return moveit.gripper_group.go(wait=True)
 
 
-def add_object_to_scene(obj_name, psi: PlanningSceneInterface):
-    pose = PoseStamped()
-    pose.header.frame_id = "panda_link0"
-    pose.pose.position.x = 0.5
-    pose.pose.position.z = 0.25
-    pose.pose.orientation.w = 1.0
-    psi.add_box(obj_name, pose, [0.5, 0.5, 0.5])
-
-
 def get_acm():
     # Set up service to get the current planning scene
     service_timeout = 5.0
@@ -380,6 +372,10 @@ def bbox_volume(bbox: BoundingBox3D) -> float:
     return bbox.size.x * bbox.size.y * bbox.size.z
 
 
+def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
+    return v1.dot(v2) / (np.sqrt(v1.dot(v1)) * np.sqrt(v2.dot(v2)))
+
+
 def main():
     rospy.init_node("active_perception_runner")
     moveit = MoveItInterface()
@@ -387,7 +383,7 @@ def main():
     moveit.move_group.allow_replanning(True)
     moveit.move_group.set_goal_tolerance(0.01)
     moveit.move_group.set_num_planning_attempts(10)
-    moveit.move_group.set_planning_time(0.5)
+    moveit.move_group.set_planning_time(3.0)
     moveit.move_group.set_max_velocity_scaling_factor(0.5)
 
     moveit.gripper_group.set_goal_tolerance(0.001)
@@ -431,6 +427,12 @@ def main():
 
     current_state = moveit.robot.get_current_state()
 
+    eef_link = moveit.move_group.get_end_effector_link()
+    current_pose_stamped = moveit.move_group.get_current_pose(eef_link)
+    current_pose = current_pose_stamped.pose
+    current_pose_np = to_numpy(current_pose, homogeneous=True)
+    facing_direction = current_pose_np[:3, 0]
+
     for detection in detections.detections:
         assert len(detection.results) == 1
         result = detection.results[0]
@@ -438,7 +440,7 @@ def main():
         model_id = result.id // 10_000
         object_id = result.id % 10_000
 
-        if model_id != 2:
+        if model_id != 5:
             continue
 
         object_name = f"object_{object_id}"
@@ -449,21 +451,27 @@ def main():
         request = GenerateGraspCandidatesRequest(model.point_cloud)
         response: GenerateGraspCandidatesResponse = generate_grasps(request)
 
-        for candidate in sorted(response.candidates.candidates, key=lambda x: x.score, reverse=True):
+        for candidate in sorted(response.candidates.candidates, key=lambda x: cosine_similarity(to_numpy(x.approach), facing_direction), reverse=True):
             print(candidate.width)
 
-            approach = to_numpy(candidate.approach)
-            binormal = to_numpy(candidate.binormal)
-            axis = to_numpy(candidate.axis)
+            approach: np.ndarray = to_numpy(candidate.approach)
+            binormal: np.ndarray = to_numpy(candidate.binormal)
+            axis: np.ndarray = to_numpy(candidate.axis)
+
+            if axis.dot(np.array([0, 0, 1])) < 0:
+                binormal *= -1
+                axis *= -1
 
             gripper_rot = np.column_stack([approach, binormal, axis])
             gripper_t = to_numpy(candidate.position)
             grasp_pose_local = np.block(
                 [[gripper_rot, gripper_t.reshape((-1, 1))], [np.zeros(3), 1]])
-            pose_global = object_pose @ np.block(
-                [[np.eye(3), (0.01 * approach).reshape((-1, 1))], [np.zeros(3), 1]]) @ grasp_pose_local
+
             pose_approach = object_pose @ np.block(
                 [[np.eye(3), (-0.05 * approach).reshape((-1, 1))], [np.zeros(3), 1]]) @ grasp_pose_local
+
+            pose_global = object_pose @ np.block(
+                [[np.eye(3), (0.03 * approach).reshape((-1, 1))], [np.zeros(3), 1]]) @ grasp_pose_local
 
             pose_approach_ros = to_message(Pose, pose_approach)
             pose_global_ros = to_message(Pose, pose_global)
@@ -500,13 +508,20 @@ def main():
             moveit.move_group.execute(approach_plan)
             moveit.move_group.stop()
 
-            moveit.move_group.set_start_state(moveit.robot.get_current_state())
+            new_current = moveit.robot.get_current_state()
+            moveit.move_group.set_start_state(new_current)
             moveit.move_group.set_pose_target(pose_global_ros)
             success_final, final_plan, plan_time, code = moveit.move_group.plan()
             if not success_final:
                 rospy.logwarn(
                     "Failed to successfully plan to final state. wtf?")
                 break
+
+            moveit.display_trajectory(new_current, final_plan)
+            answer = input("Trajectory okay [y/N]? ")
+            if answer.lower() != "y":
+                rospy.loginfo("Trajectory not okay. Trying others...")
+                continue
 
             moveit.move_group.execute(final_plan)
             moveit.move_group.stop()

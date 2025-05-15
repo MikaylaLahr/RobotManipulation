@@ -98,12 +98,9 @@ public:
         open3d::geometry::PointCloud downsampled = *cropped.VoxelDownSample(
             voxel_size_);  // Downsample the cropped cloud
 
-        pc_so_far += downsampled;
-        pc_so_far = *pc_so_far.VoxelDownSample(voxel_size_);
-
         // Publish the downsampled (and cropped) cloud
         sensor_msgs::PointCloud2 filtered_msg = convert_cloud_open3d_to_ros(
-            pc_so_far, transformed_1.header);
+            downsampled, transformed_1.header);
         filtered_pub_.publish(filtered_msg);
     }
 

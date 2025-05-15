@@ -295,6 +295,9 @@ private:
                 open3d::geometry::PointCloud object_pc_o3d;
                 open3d_conversions::rosToOpen3d(object_pc_ros, object_pc_o3d);
 
+                // const auto& [removed, _] = object_pc_o3d.RemoveStatisticalOutliers(5, 0.5);
+                // object_pc_o3d = *removed;
+
                 open3d::geometry::OrientedBoundingBox object_bb =
                     object_pc_o3d.GetMinimalOrientedBoundingBox();
 
@@ -325,7 +328,7 @@ private:
                     object_pc_o3d, cluster_features, object_features,
                     FastGlobalRegistrationOption());
 
-                auto icp_result = RegistrationICP(cluster_pc_o3d, object_pc_o3d, 0.01,
+                auto icp_result = RegistrationICP(cluster_pc_o3d, object_pc_o3d, 0.005,
                     result.transformation_, TransformationEstimationPointToPlane());
 
                 if (icp_result.IsBetterRANSACThan(best_result)) {

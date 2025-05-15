@@ -173,6 +173,7 @@ add_executable(object_reg src/object_reg.cpp)
 add_executable(filter_cloud src/filter_cloud.cpp)
 # add_executable(grasp_gen src/grasp_gen.cpp)
 add_executable(active_perception_service src/active_perception_service.cpp)
+add_executable(object_find2 src/object_find2.cpp)
 
 # add_dependencies(grasp_gen robot_manipulation_generate_messages_cpp)
 
@@ -218,6 +219,12 @@ target_link_libraries(active_perception_service
   ${OpenCV_LIBS}
 )
 
+target_link_libraries(object_find2
+  ${catkin_LIBRARIES}
+  ${Open3D_LIBRARIES}
+  ${PCL_LIBRARIES}
+)
+
 #############
 ## Install ##
 #############
@@ -231,6 +238,8 @@ catkin_install_python(PROGRAMS
   src/pick_place.py
   src/box_detector.py
   src/box_detector2.py
+  src/packer.py
+  src/packer2.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
